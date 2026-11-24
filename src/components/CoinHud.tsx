@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useIsPc } from '../utils/platform';
 
 interface FlyingCoin {
   id: number;
@@ -39,6 +40,7 @@ export const CoinHud = memo(
     { coins, onCoinArrived },
     ref,
   ) {
+    const isPc = useIsPc();
     const counterBoxRef = useRef<HTMLDivElement | null>(null);
     const coinNodesRef = useRef<Record<number, HTMLDivElement | null>>({});
     const nextCoinIdRef = useRef(1);
@@ -211,12 +213,15 @@ export const CoinHud = memo(
       <div
         ref={counterBoxRef}
         aria-label={`Coins: ${coins}`}
-        className="pointer-events-none fixed z-30 flex items-center gap-1.5 rounded-[5px] px-2.5 select-none"
+        className={`pointer-events-none fixed z-30 flex items-center rounded-[5px] select-none ${
+          isPc ? 'gap-2.5 px-4.5' : 'gap-1.5 px-2.5'
+        }`}
         style={{
-          top: 'max(6px, var(--stage-safe-top, 0px))',
-          right:
-            'calc(max(10px, var(--stage-safe-right, 0px)) + clamp(36px, 5.6vw, 42px) * 2 + 16px)',
-          height: 'clamp(36px, 5.6vw, 42px)',
+          top: isPc ? 'max(20px, var(--stage-safe-top, 0px))' : 'max(6px, var(--stage-safe-top, 0px))',
+          right: isPc
+            ? 'calc(max(24px, var(--stage-safe-right, 0px)) + clamp(56px, 4.2vw, 66px) * 2 + 24px)'
+            : 'calc(max(10px, var(--stage-safe-right, 0px)) + clamp(36px, 5.6vw, 42px) * 2 + 16px)',
+          height: isPc ? 'clamp(56px, 4.2vw, 66px)' : 'clamp(36px, 5.6vw, 42px)',
           backgroundColor: '#2D2F5B',
           backgroundImage: PURPLE_DOT_PATTERN,
           backgroundSize: '10px 10px',
@@ -229,8 +234,8 @@ export const CoinHud = memo(
         }}
       >
         <svg
-          width="17"
-          height="17"
+          width={isPc ? '25' : '17'}
+          height={isPc ? '25' : '17'}
           viewBox="0 0 24 24"
           fill="none"
           aria-hidden="true"
@@ -255,7 +260,7 @@ export const CoinHud = memo(
         <span
           className="font-cartoon font-extrabold italic tabular-nums text-white"
           style={{
-            fontSize: 'clamp(12px, 1.7vw, 15px)',
+            fontSize: isPc ? 'clamp(19px, 1.45vw, 23px)' : 'clamp(12px, 1.7vw, 15px)',
             textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.92)',
           }}
         >

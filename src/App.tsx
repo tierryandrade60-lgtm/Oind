@@ -19,6 +19,7 @@ import {
 } from './components/CombatOverlayHud';
 import { DeathScreen } from './components/DeathScreen';
 import { GraphicsSettingsPanel } from './components/GraphicsSettingsPanel';
+import { KeybindBadge } from './components/KeybindBadge';
 import { MainMenu } from './components/MainMenu';
 import { MapSelector } from './components/MapSelector';
 import {
@@ -31,6 +32,7 @@ import { ScreenFxOverlay, ScreenFxOverlayHandle } from './components/ScreenFxOve
 import { ScreenTransition, TransitionPhase } from './components/ScreenTransition';
 import { GameEngine } from './game/GameEngine';
 import { MapId } from './game/maps';
+import { useIsPc } from './utils/platform';
 import {
   restoreServerSession,
   SyncedGameState,
@@ -295,6 +297,10 @@ export default function App() {
     killStreak: 0,
   });
 
+  const isPc = useIsPc();
+  const isPcRef = useRef(isPc);
+  isPcRef.current = isPc;
+
   const [needsFullscreenStart, setNeedsFullscreenStart] = useState(true);
   const [isPortrait, setIsPortrait] = useState(() =>
     typeof window !== 'undefined' ? window.innerHeight > window.innerWidth : false,
@@ -554,15 +560,30 @@ export default function App() {
 
   const [wingsEnabled, setWingsEnabled] = useState(false);
   const wingsEnabledRef = useRef(false);
+  const [jumpBtnPressed, setJumpBtnPressed] = useState(false);
 
   const [graphicsSettings, setGraphicsSettings] = useState<GraphicsSettings>(() =>
-    loadGraphicsSettings(),
+    loadGraphicsSettings(isPc),
   );
   const graphicsSettingsRef = useRef(graphicsSettings);
   graphicsSettingsRef.current = graphicsSettings;
 
-  // Rotate stage automatically into landscape if device remains portrait after clicking start
-  const forcedLandscape = !needsFullscreenStart && isPortrait;
+  useEffect(() => {
+    const platformSettings = loadGraphicsSettings(isPc);
+    setGraphicsSettings(platformSettings);
+    soundEngineRef.current?.setMasterVolume(platformSettings.masterVolume);
+    engineRef.current?.applyGraphicsSettings(platformSettings);
+    if (!platformSettings.screenEffects) {
+      screenFxRef.current?.reset();
+      if (canvasMountRef.current && canvasBlurAppliedRef.current) {
+        canvasMountRef.current.style.filter = 'none';
+        canvasBlurAppliedRef.current = false;
+      }
+    }
+  }, [isPc]);
+
+  // Rotate stage automatically into landscape only on mobile/touch portrait viewports
+  const forcedLandscape = !needsFullscreenStart && isPortrait && !isPc;
 
   // Virtual joystick DOM refs for zero-latency, zero-rerender pointer updates
   const joyRingRef = useRef<HTMLDivElement | null>(null);
@@ -577,7 +598,7 @@ export default function App() {
     originY: 0,
   });
 
-  // Right-side camera look drag ref
+  // Right-side camera look drag ref (mobile touch) & RMB free-look ref (PC mouse)
   const lookStateRef = useRef<{
     pointerId: number | null;
     lastX: number;
@@ -587,6 +608,13 @@ export default function App() {
     lastX: 0,
     lastY: 0,
   });
+  const pcRightDragRef = useRef<{
+    pointerId: number;
+    lastX: number;
+    lastY: number;
+  } | null>(null);
+  const lastMouseClientRef = useRef<{ x: number; y: number } | null>(null);
+  const shiftSprintHeldRef = useRef(false);
 
   // Active stage touch pointers (pinch strictly isolated to 2 right-zone fingers)
   const stagePointersRef = useRef<
@@ -607,8 +635,6 @@ export default function App() {
     lastDist: 0,
     deadbandCleared: false,
   });
-
-  const jumpBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const scheduleTimer = useCallback((fn: () => void, delayMs: number): number => {
     const id = window.setTimeout(() => {
@@ -1914,6 +1940,9 @@ export default function App() {
         onFlightEnergyChange: (flight, maxFlight) => {
           profileHudRef.current?.setFlight(flight, maxFlight);
         },
+        onReticleScreenUpdate: (sx, sy, assist) => {
+          reticleRef.current?.setPosition(sx, sy, assist);
+        },
         onPlayerDeath: () => {
           handleTriggerDeathRef.current();
         },
@@ -1925,6 +1954,7 @@ export default function App() {
       selectedMapIdRef.current,
     );
 
+    engine.setPcAimEnabled(isPcRef.current);
     engine.setWingsAlwaysVisible(wingsEnabledRef.current);
     engineRef.current = engine;
 
@@ -2014,6 +2044,79 @@ export default function App() {
     [],
   );
 
+  const updatePcCursorFromClient = useCallback((clientX: number, clientY: number) => {
+    const root = appRootRef.current;
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -(((clientY - rect.top) / rect.height) * 2 - 1);
+    engineRef.current?.setPcCursorNdc(nx, ny);
+  }, []);
+
+  useEffect(() => {
+    engineRef.current?.setPcAimEnabled(isPc);
+    if (!isPc || gamePhase !== 'playing') {
+      pcRightDragRef.current = null;
+      reticleRef.current?.resetPosition();
+    } else if (lastMouseClientRef.current) {
+      updatePcCursorFromClient(
+        lastMouseClientRef.current.x,
+        lastMouseClientRef.current.y,
+      );
+    }
+  }, [isPc, engineActive, gamePhase, updatePcCursorFromClient]);
+
+  useEffect(() => {
+    if (!isPc) return;
+
+    const onWindowPointerMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return;
+      lastMouseClientRef.current = { x: e.clientX, y: e.clientY };
+      if (!engineActive || gamePhaseRef.current !== 'playing') return;
+
+      const rightDrag = pcRightDragRef.current;
+      if (rightDrag && rightDrag.pointerId === e.pointerId) {
+        const dx = e.clientX - rightDrag.lastX;
+        const dy = e.clientY - rightDrag.lastY;
+        rightDrag.lastX = e.clientX;
+        rightDrag.lastY = e.clientY;
+        const sensScale = 0.25 + (graphicsSettingsRef.current.sensitivity / 100) * 1.75;
+        engineRef.current?.rotateCamera(dx * 0.0052 * sensScale, dy * 0.0038 * sensScale);
+        return;
+      }
+      if (!rightDrag) {
+        updatePcCursorFromClient(e.clientX, e.clientY);
+      }
+    };
+
+    const onWindowPointerEnd = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return;
+      const rightDrag = pcRightDragRef.current;
+      if (rightDrag && (rightDrag.pointerId === e.pointerId || e.button === 2)) {
+        pcRightDragRef.current = null;
+        if (gamePhaseRef.current === 'playing') {
+          updatePcCursorFromClient(e.clientX, e.clientY);
+        }
+      }
+    };
+
+    const onWindowBlur = () => {
+      pcRightDragRef.current = null;
+    };
+
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('pointerup', onWindowPointerEnd);
+    window.addEventListener('pointercancel', onWindowPointerEnd);
+    window.addEventListener('blur', onWindowBlur);
+    return () => {
+      window.removeEventListener('pointermove', onWindowPointerMove);
+      window.removeEventListener('pointerup', onWindowPointerEnd);
+      window.removeEventListener('pointercancel', onWindowPointerEnd);
+      window.removeEventListener('blur', onWindowBlur);
+    };
+  }, [isPc, engineActive, updatePcCursorFromClient]);
+
   const resetAllStagePointers = useCallback(() => {
     stagePointersRef.current.clear();
     tapTrackRef.current.clear();
@@ -2024,6 +2127,9 @@ export default function App() {
     pinchStateRef.current.deadbandCleared = false;
     joyStateRef.current.pointerId = null;
     lookStateRef.current.pointerId = null;
+    pcRightDragRef.current = null;
+    setJumpBtnPressed(false);
+    engineRef.current?.setJumpHeld(false);
     engineRef.current?.setJoystickVector(0, 0);
     updateJoystickVisual(false, 0, 0, 0, 0);
   }, [updateJoystickVisual]);
@@ -2094,6 +2200,27 @@ export default function App() {
     if (gamePhaseRef.current !== 'playing') return;
     e.preventDefault();
     soundEngineRef.current?.unlock();
+
+    if (isPcRef.current) {
+      if (e.pointerType === 'mouse') {
+        if (e.button === 2) {
+          try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+          } catch {
+            // Ignore pointer capture errors
+          }
+          pcRightDragRef.current = {
+            pointerId: e.pointerId,
+            lastX: e.clientX,
+            lastY: e.clientY,
+          };
+        } else {
+          updatePcCursorFromClient(e.clientX, e.clientY);
+        }
+      }
+      return;
+    }
+
     e.currentTarget.setPointerCapture(e.pointerId);
 
     const [sx, sy] = toStageCoords(e.clientX, e.clientY);
@@ -2134,6 +2261,7 @@ export default function App() {
 
   const handleStagePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gamePhaseRef.current !== 'playing') return;
+    if (isPcRef.current) return;
     const tracked = stagePointersRef.current.get(e.pointerId);
     if (!tracked) return;
     e.preventDefault();
@@ -2192,9 +2320,24 @@ export default function App() {
   };
 
   const handleStagePointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore pointer release errors
     }
+    if (isPcRef.current) {
+      if (
+        e.pointerType === 'mouse' &&
+        (pcRightDragRef.current?.pointerId === e.pointerId || e.button === 2)
+      ) {
+        pcRightDragRef.current = null;
+        updatePcCursorFromClient(e.clientX, e.clientY);
+      }
+      return;
+    }
+
     const prevPos = stagePointersRef.current.get(e.pointerId);
     const tapStart = tapTrackRef.current.get(e.pointerId);
     stagePointersRef.current.delete(e.pointerId);
@@ -2238,57 +2381,33 @@ export default function App() {
   };
 
   const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
-    if (needsFullscreenStart || gamePhaseRef.current !== 'playing') return;
-    engineRef.current?.zoomCameraByDelta(e.deltaY * 0.0035);
+    if (!isPcRef.current || needsFullscreenStart || gamePhaseRef.current !== 'playing') {
+      return;
+    }
+    const modeScale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 120 : 1;
+    engineRef.current?.zoomCameraByDelta(e.deltaY * modeScale * 0.0028);
   };
 
-  const handleJumpPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
-    if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
-    e.stopPropagation();
-    e.preventDefault();
-    soundEngineRef.current?.unlock();
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      // Ignore pointer capture errors
+  const setSprintActive = useCallback((active: boolean) => {
+    if (active && (gamePhaseRef.current !== 'playing' || spawnLockedRef.current)) return;
+    if (active) {
+      soundEngineRef.current?.unlock();
     }
-    engineRef.current?.setJumpHeld(true);
-    engineRef.current?.triggerJump();
-    if (jumpBtnRef.current) {
-      jumpBtnRef.current.style.transform = 'rotate(-1.5deg) scale(0.92)';
-      jumpBtnRef.current.style.backgroundColor = '#25264A';
-    }
-  };
+    const currentActual =
+      engineRef.current?.getStaminaState().sprintEnabled ?? sprintEnabledRef.current;
+    if (sprintEnabledRef.current === active && currentActual === active) return;
 
-  const handleJumpPointerEnd = (e: React.PointerEvent<HTMLButtonElement>) => {
-    e.stopPropagation();
-    try {
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      }
-    } catch {
-      // Ignore pointer release errors
-    }
-    engineRef.current?.setJumpHeld(false);
-    if (jumpBtnRef.current) {
-      jumpBtnRef.current.style.transform = 'rotate(-1.5deg) scale(1)';
-      jumpBtnRef.current.style.backgroundColor = '#353664';
-    }
-  };
-
-  const toggleSprint = useCallback(() => {
-    if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
-    soundEngineRef.current?.unlock();
-    const next = !sprintEnabledRef.current;
-    sprintEnabledRef.current = next;
-    setSprintEnabled(next);
-    engineRef.current?.setSprintEnabled(next);
-    const actualSprint = engineRef.current?.getStaminaState().sprintEnabled ?? next;
-    if (actualSprint !== next) {
+    sprintEnabledRef.current = active;
+    setSprintEnabled(active);
+    engineRef.current?.setSprintEnabled(active);
+    const actualSprint = engineRef.current?.getStaminaState().sprintEnabled ?? active;
+    if (actualSprint !== active) {
       sprintEnabledRef.current = actualSprint;
       setSprintEnabled(actualSprint);
     }
-    soundEngineRef.current?.playSprintToggle(actualSprint);
+    if (gamePhaseRef.current === 'playing' && actualSprint !== currentActual) {
+      soundEngineRef.current?.playSprintToggle(actualSprint);
+    }
     const staminaState = engineRef.current?.getStaminaState();
     if (staminaState) {
       void validateServerState({
@@ -2299,6 +2418,67 @@ export default function App() {
       });
     }
   }, []);
+
+  const toggleSprint = useCallback(() => {
+    setSprintActive(!sprintEnabledRef.current);
+  }, [setSprintActive]);
+
+  // PC Hold-to-Sprint with Left Shift (ShiftLeft)
+  useEffect(() => {
+    if (!isPc) return;
+
+    const releaseSprint = () => {
+      shiftSprintHeldRef.current = false;
+      setSprintActive(false);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'ShiftLeft') return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      shiftSprintHeldRef.current = true;
+      if (e.repeat) return;
+      if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
+      setSprintActive(true);
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'ShiftLeft') return;
+      releaseSprint();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        releaseSprint();
+        engineRef.current?.clearHeldInputs();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', releaseSprint);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', releaseSprint);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [isPc, setSprintActive]);
+
+  useEffect(() => {
+    if (!isPc) return;
+    if (gamePhase !== 'playing') {
+      shiftSprintHeldRef.current = false;
+      setSprintActive(false);
+    } else if (!spawnLocked && shiftSprintHeldRef.current) {
+      setSprintActive(true);
+    }
+  }, [isPc, gamePhase, spawnLocked, setSprintActive]);
 
   const toggleWings = useCallback(() => {
     if (gamePhaseRef.current !== 'playing' || painChanneling || spawnLockedRef.current) return;
@@ -2783,6 +2963,7 @@ export default function App() {
 
   useEffect(() => {
     if (
+      !isPc ||
       selectedCharacterId !== 'thor' ||
       !flightActive ||
       teleportLocked ||
@@ -2791,13 +2972,20 @@ export default function App() {
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat || e.code !== 'KeyE') return;
+      if (
+        e.repeat ||
+        e.code !== 'KeyE' ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
       handleCastThorLightningSlam();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedCharacterId, flightActive, teleportLocked, spawnLocked, handleCastThorLightningSlam]);
+  }, [isPc, selectedCharacterId, flightActive, teleportLocked, spawnLocked, handleCastThorLightningSlam]);
 
   const handleCastThorLightningStormBeam = useCallback(() => {
     if (gamePhaseRef.current !== 'playing') return false;
@@ -2817,6 +3005,7 @@ export default function App() {
 
   useEffect(() => {
     if (
+      !isPc ||
       selectedCharacterId !== 'silver-surfer' ||
       silverEnergy < SILVER_SURFER_SONIC_UNLOCK ||
       teleportLocked ||
@@ -2825,13 +3014,20 @@ export default function App() {
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat || e.code !== 'KeyE') return;
+      if (
+        e.repeat ||
+        e.code !== 'KeyE' ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
       handleCastSonicBlast();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedCharacterId, silverEnergy, teleportLocked, spawnLocked, handleCastSonicBlast]);
+  }, [isPc, selectedCharacterId, silverEnergy, teleportLocked, spawnLocked, handleCastSonicBlast]);
 
   const handleCastCosmicBlast = useCallback(() => {
     if (gamePhaseRef.current !== 'playing') return false;
@@ -2858,6 +3054,7 @@ export default function App() {
 
   useEffect(() => {
     if (
+      !isPc ||
       selectedCharacterId !== 'storm' ||
       !flightActive ||
       teleportLocked ||
@@ -2866,13 +3063,101 @@ export default function App() {
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat || e.code !== 'KeyE') return;
+      if (
+        e.repeat ||
+        e.code !== 'KeyE' ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
       handleCastLightningStrike();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedCharacterId, flightActive, teleportLocked, spawnLocked, handleCastLightningStrike]);
+  }, [isPc, selectedCharacterId, flightActive, teleportLocked, spawnLocked, handleCastLightningStrike]);
+
+  // PC keyboard shortcuts for secondary / contextual character abilities (Q, E, R, F)
+  useEffect(() => {
+    if (!isPc) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.repeat ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
+
+      const charId = selectedCharacterIdRef.current;
+      if (e.code === 'KeyF') {
+        if (charId === 'scarlet-witch' && flightActive) {
+          handleScarletFlightCancel();
+        }
+        return;
+      }
+
+      if (e.code === 'KeyQ') {
+        if (charId === 'hela' && !teleportLocked) {
+          handleToggleCrown();
+        }
+        return;
+      }
+
+      if (e.code === 'KeyR') {
+        if (charId === 'hela' && swordSummonActive && !teleportLocked) {
+          handleCastSwordSlash();
+        }
+        return;
+      }
+
+      if (e.code === 'KeyE') {
+        if (teleportLocked) return;
+        if (charId === 'hela' && swordSummonActive) {
+          handleThrowNecrosword();
+        } else if (
+          charId === 'phoenix-force' &&
+          (flightActive || phoenixDivePhase !== 'idle')
+        ) {
+          handleCastPhoenixDive();
+        } else if (charId === 'vampire' && (flightActive || vampireStompDiving)) {
+          handleCastVampireGroundStomp();
+        } else if (charId === 'vision' && flightActive && !visionHeadGripActive) {
+          handleToggleIntangibility();
+        } else if (
+          charId === 'doctor-strange' &&
+          selectedSkinsByCharRef.current['doctor-strange'] !== 'ancient-one' &&
+          flightActive
+        ) {
+          handleToggleMysticShield();
+        } else if (charId === 'emma-frost' && diamondActive) {
+          handleCastDiamondProjectile();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    diamondActive,
+    flightActive,
+    handleCastDiamondProjectile,
+    handleCastPhoenixDive,
+    handleCastSwordSlash,
+    handleCastVampireGroundStomp,
+    handleScarletFlightCancel,
+    handleThrowNecrosword,
+    handleToggleCrown,
+    handleToggleIntangibility,
+    handleToggleMysticShield,
+    isPc,
+    phoenixDivePhase,
+    swordSummonActive,
+    teleportLocked,
+    vampireStompDiving,
+    visionHeadGripActive,
+  ]);
 
   const handleToggleStormTornado = useCallback(() => {
     if (gamePhaseRef.current !== 'playing') return false;
@@ -3105,7 +3390,7 @@ export default function App() {
 
   const handleGraphicsChange = useCallback((next: GraphicsSettings) => {
     setGraphicsSettings(next);
-    saveGraphicsSettings(next);
+    saveGraphicsSettings(next, isPcRef.current);
     soundEngineRef.current?.setMasterVolume(next.masterVolume);
     engineRef.current?.applyGraphicsSettings(next);
     if (!next.screenEffects) {
@@ -3390,7 +3675,7 @@ export default function App() {
       if (gamePhaseRef.current === 'dead') {
         setDeathPanelVisible(true);
       }
-    }, 2500);
+    }, 1000);
   }, [
     clearAllTimers,
     handleInstantTestRespawn,
@@ -3646,6 +3931,20 @@ export default function App() {
                 '--stage-safe-right': 'env(safe-area-inset-right, 0px)',
                 '--stage-safe-bottom': 'env(safe-area-inset-bottom, 0px)',
                 '--stage-safe-left': 'env(safe-area-inset-left, 0px)',
+                ...(isPc
+                  ? {
+                      '--pc-edge-r': 'max(28px, calc(var(--stage-safe-right, 0px) + 22px))',
+                      '--pc-edge-b': 'max(28px, calc(var(--stage-safe-bottom, 0px) + 22px))',
+                      '--pc-sprint': 'clamp(78px, 5.4vw, 102px)',
+                      '--pc-aux': 'clamp(66px, 4.6vw, 86px)',
+                      '--pc-slot': 'clamp(82px, 5.6vw, 104px)',
+                      '--pc-slot-5': 'clamp(72px, 4.9vw, 92px)',
+                      '--pc-sub': 'clamp(72px, 4.9vw, 90px)',
+                      '--pc-gap': 'clamp(12px, 0.9vw, 16px)',
+                      '--pc-sub-gap': 'clamp(10px, 0.8vw, 14px)',
+                      '--pc-row-gap': 'clamp(16px, 1.3vw, 22px)',
+                    }
+                  : {}),
               }) as unknown as CSSProperties
         }
       >
@@ -3767,9 +4066,13 @@ export default function App() {
                 {abilityFeedback && (
                   <div
                     role="status"
-                    className="pointer-events-none fixed left-1/2 z-30 -translate-x-1/2 rounded-[7px] px-3 py-1 font-cartoon text-[11px] font-bold italic uppercase tracking-wide text-white animate-cartoon-pop-in"
+                    className={`pointer-events-none fixed left-1/2 z-30 -translate-x-1/2 rounded-[7px] font-cartoon font-bold italic uppercase tracking-wide text-white animate-cartoon-pop-in ${
+                      isPc ? 'px-5 py-2 text-[16px]' : 'px-3 py-1 text-[11px]'
+                    }`}
                     style={{
-                      top: 'calc(max(10px, var(--stage-safe-top, 0px)) + 42px)',
+                      top: isPc
+                        ? 'calc(max(20px, var(--stage-safe-top, 0px)) + 84px)'
+                        : 'calc(max(10px, var(--stage-safe-top, 0px)) + 42px)',
                       backgroundColor: '#181A38',
                       border: '2.5px solid #FFD147',
                       boxShadow: '2px 3px 0 rgba(8, 10, 18, 0.88)',
@@ -3783,7 +4086,7 @@ export default function App() {
                 {/* Left Side: Invisible Virtual Joystick */}
                 <div
                   className="absolute left-0 top-0 bottom-0 w-1/2 z-10"
-                  style={{ touchAction: 'none' }}
+                  style={{ touchAction: 'none', cursor: isPc ? 'crosshair' : undefined }}
                   onPointerDown={(e) => handleStagePointerDown('left', e)}
                   onPointerMove={handleStagePointerMove}
                   onPointerUp={handleStagePointerEnd}
@@ -3794,7 +4097,7 @@ export default function App() {
                 {/* Right Side: Look Drag + 2-Finger Pinch Zone */}
                 <div
                   className="absolute right-0 top-0 bottom-0 w-1/2 z-10"
-                  style={{ touchAction: 'none' }}
+                  style={{ touchAction: 'none', cursor: isPc ? 'crosshair' : undefined }}
                   onPointerDown={(e) => handleStagePointerDown('right', e)}
                   onPointerMove={handleStagePointerMove}
                   onPointerUp={handleStagePointerEnd}
@@ -3802,44 +4105,46 @@ export default function App() {
                   onContextMenu={(e) => e.preventDefault()}
                 />
 
-                {/* Virtual Joystick Visual */}
-                <div
-                  ref={joyRingRef}
-                  aria-hidden="true"
-                  className="pointer-events-none fixed left-0 top-0 z-20 flex items-center justify-center rounded-full transition-opacity duration-100"
-                  style={{
-                    width: `${OUTER_RADIUS * 2}px`,
-                    height: `${OUTER_RADIUS * 2}px`,
-                    opacity: 0,
-                    backgroundColor: 'rgba(53, 54, 100, 0.72)',
-                    backgroundImage: PURPLE_DOT_PATTERN,
-                    backgroundSize: '10px 10px',
-                    backgroundPosition: '0 0, 5px 5px',
-                    border: '2.5px solid #0B0D18',
-                    boxShadow:
-                      '2px 3px 0 rgba(8, 10, 18, 0.72), inset 0 0 0 1.5px rgba(155, 160, 230, 0.24)',
-                    willChange: 'transform, opacity',
-                  }}
-                >
+                {/* Virtual Joystick Visual (Mobile Only) */}
+                {!isPc && (
                   <div
-                    ref={joyKnobRef}
-                    className="rounded-full"
+                    ref={joyRingRef}
+                    aria-hidden="true"
+                    className="pointer-events-none fixed left-0 top-0 z-20 flex items-center justify-center rounded-full transition-opacity duration-100"
                     style={{
-                      width: `${KNOB_RADIUS * 2}px`,
-                      height: `${KNOB_RADIUS * 2}px`,
-                      backgroundColor: '#484A88',
+                      width: `${OUTER_RADIUS * 2}px`,
+                      height: `${OUTER_RADIUS * 2}px`,
+                      opacity: 0,
+                      backgroundColor: 'rgba(53, 54, 100, 0.72)',
                       backgroundImage: PURPLE_DOT_PATTERN,
-                      backgroundSize: '8px 8px',
-                      backgroundPosition: '0 0, 4px 4px',
-                      border: '2px solid #0B0D18',
+                      backgroundSize: '10px 10px',
+                      backgroundPosition: '0 0, 5px 5px',
+                      border: '2.5px solid #0B0D18',
                       boxShadow:
-                        '0 2px 0 rgba(8, 10, 18, 0.78), inset 0 0 0 1.5px rgba(195, 200, 255, 0.34)',
-                      willChange: 'transform',
+                        '2px 3px 0 rgba(8, 10, 18, 0.72), inset 0 0 0 1.5px rgba(155, 160, 230, 0.24)',
+                      willChange: 'transform, opacity',
                     }}
-                  />
-                </div>
+                  >
+                    <div
+                      ref={joyKnobRef}
+                      className="rounded-full"
+                      style={{
+                        width: `${KNOB_RADIUS * 2}px`,
+                        height: `${KNOB_RADIUS * 2}px`,
+                        backgroundColor: '#484A88',
+                        backgroundImage: PURPLE_DOT_PATTERN,
+                        backgroundSize: '8px 8px',
+                        backgroundPosition: '0 0, 4px 4px',
+                        border: '2px solid #0B0D18',
+                        boxShadow:
+                          '0 2px 0 rgba(8, 10, 18, 0.78), inset 0 0 0 1.5px rgba(195, 200, 255, 0.34)',
+                        willChange: 'transform',
+                      }}
+                    />
+                  </div>
+                )}
 
-                {/* Phoenix Force Only: Fiery Wings Toggle Button directly above Run Button */}
+                {/* Phoenix Force Only: Fiery Wings Toggle Button directly above Sprint Button */}
                 {isPhoenixCharacter && (
                   <button
                     type="button"
@@ -3849,6 +4154,7 @@ export default function App() {
                     onPointerDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      if (isPc) e.currentTarget.blur();
                       toggleWings();
                     }}
                     onPointerMove={(e) => e.stopPropagation()}
@@ -3861,14 +4167,16 @@ export default function App() {
                       }
                     }}
                     onContextMenu={(e) => e.preventDefault()}
-                    className="fixed z-20 flex items-center justify-center rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    className="fixed z-20 flex items-center justify-center rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
                     style={{
-                      width: 'clamp(44px, 7.0vw, 54px)',
-                      height: 'clamp(44px, 7.0vw, 54px)',
-                      right:
-                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + (clamp(54px, 8.4vw, 66px) - clamp(44px, 7.0vw, 54px)) / 2)',
-                      bottom:
-                        'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px + clamp(44px, 7.0vw, 54px) + 10px)',
+                      width: isPc ? 'var(--pc-aux, 76px)' : 'clamp(44px, 7.0vw, 54px)',
+                      height: isPc ? 'var(--pc-aux, 76px)' : 'clamp(44px, 7.0vw, 54px)',
+                      right: isPc
+                        ? 'calc(var(--pc-edge-r, 28px) + (var(--pc-sprint, 90px) - var(--pc-aux, 76px)) / 2)'
+                        : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + (clamp(54px, 8.4vw, 66px) - clamp(44px, 7.0vw, 54px)) / 2)',
+                      bottom: isPc
+                        ? 'calc(var(--pc-edge-b, 28px) + var(--pc-sprint, 90px) + var(--pc-row-gap, 18px))'
+                        : 'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(50px, 7.8vw, 60px) + 20px)',
                       backgroundColor: wingsEnabled ? '#1C1D3A' : '#353664',
                       backgroundImage: PURPLE_DOT_PATTERN,
                       backgroundSize: '11px 11px',
@@ -3889,8 +4197,8 @@ export default function App() {
                     }}
                   >
                     <svg
-                      width="24"
-                      height="24"
+                      width={isPc ? '36' : '24'}
+                      height={isPc ? '36' : '24'}
                       viewBox="0 0 24 24"
                       fill="none"
                       aria-hidden="true"
@@ -3912,308 +4220,34 @@ export default function App() {
                   </button>
                 )}
 
-                {/* Hela Only: 5th Ability — Crown Form directly above Run Button */}
+                {/* Hela Only: 5th Ability — Crown Form directly above Sprint Button */}
                 {isHelaCharacter && (
-                  <button
-                    type="button"
-                    aria-label={activeHelaCrownDef.name}
-                    aria-pressed={crownActive}
-                    disabled={!crownActive && crownCd !== null}
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleToggleCrown();
-                    }}
-                    onPointerMove={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => e.stopPropagation()}
-                    onPointerCancel={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleToggleCrown();
-                      }
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="fixed z-20 flex flex-col items-center justify-center gap-[1px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  <div
+                    className="fixed z-20"
                     style={{
-                      width: 'clamp(44px, 7.0vw, 54px)',
-                      height: 'clamp(44px, 7.0vw, 54px)',
-                      right:
-                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + (clamp(54px, 8.4vw, 66px) - clamp(44px, 7.0vw, 54px)) / 2)',
-                      bottom:
-                        'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px + clamp(44px, 7.0vw, 54px) + 10px)',
-                      backgroundColor: crownActive ? '#172822' : '#353664',
-                      backgroundImage: PURPLE_DOT_PATTERN,
-                      backgroundSize: '11px 11px',
-                      backgroundPosition: '0 0, 5.5px 5.5px',
-                      border: crownActive
-                        ? '2.5px solid #3CE66B'
-                        : '2.5px solid #0B0D18',
-                      boxShadow: crownActive
-                        ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(60, 230, 107, 0.45)'
-                        : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(155, 160, 230, 0.22)',
+                      right: isPc
+                        ? 'calc(var(--pc-edge-r, 28px) + (var(--pc-sprint, 90px) - var(--pc-aux, 76px)) / 2)'
+                        : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + (clamp(54px, 8.4vw, 66px) - clamp(44px, 7.0vw, 54px)) / 2)',
+                      bottom: isPc
+                        ? 'calc(var(--pc-edge-b, 28px) + var(--pc-sprint, 90px) + var(--pc-row-gap, 18px))'
+                        : 'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(50px, 7.8vw, 60px) + 20px)',
                       transform: crownActive
                         ? 'rotate(-1.2deg) translateY(1px) scale(0.96)'
                         : 'rotate(-1.2deg)',
-                      transition:
-                        'transform 100ms cubic-bezier(0.16, 1, 0.3, 1), background-color 120ms ease, box-shadow 120ms ease',
-                      touchAction: 'none',
-                      cursor: !crownActive && crownCd !== null ? 'default' : 'pointer',
+                      transition: 'transform 100ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
                   >
-                    <AbilityIcon id="crown-form" size={20} />
-                    <span
-                      className="font-cartoon font-bold italic uppercase leading-none text-white"
-                      style={{
-                        fontSize: 'clamp(6.2px, 0.88vw, 7.4px)',
-                        textShadow: '0 1px 0 #0B0D18',
-                      }}
-                    >
-                      CROWN
-                    </span>
-
-                    {crownActive && (
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
-                      >
-                        <div
-                          ref={crownBarRef}
-                          className="h-full w-full bg-[#3CE66B]"
-                          style={{
-                            transformOrigin: 'left center',
-                            transform: 'scaleX(1)',
-                            willChange: 'transform',
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    {crownCd !== null && !crownActive && (
-                      <div
-                        ref={crownVeilRef}
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-0 z-20"
-                        style={{
-                          backgroundColor: 'rgba(10, 11, 24, 0.74)',
-                          borderTop: '1.5px solid rgba(60, 230, 107, 0.4)',
-                          transformOrigin: 'bottom center',
-                          transform: 'scaleY(1)',
-                          willChange: 'transform',
-                        }}
-                      />
-                    )}
-                  </button>
-                )}
-
-                {/* Scarlet Witch Only: Flight Cancellation + Red Shockwave Button beside Run */}
-                {selectedCharacter.id === 'scarlet-witch' && flightActive && (
-                  <button
-                    type="button"
-                    aria-label="Flight Cancellation"
-                    disabled={flightCancelCd !== null}
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleScarletFlightCancel();
-                    }}
-                    onPointerMove={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => e.stopPropagation()}
-                    onPointerCancel={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleScarletFlightCancel();
-                      }
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="fixed z-20 flex items-center justify-center overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
-                    style={{
-                      width: 'clamp(54px, 8.4vw, 66px)',
-                      height: 'clamp(54px, 8.4vw, 66px)',
-                      right:
-                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                      bottom:
-                        'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                      backgroundColor: '#353664',
-                      backgroundImage: PURPLE_DOT_PATTERN,
-                      backgroundSize: '11px 11px',
-                      backgroundPosition: '0 0, 5.5px 5.5px',
-                      border: '2.5px solid #0B0D18',
-                      boxShadow:
-                        '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 118, 142, 0.32)',
-                      transform: 'rotate(-1.5deg)',
-                      transition:
-                        'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
-                      touchAction: 'none',
-                      cursor: flightCancelCd !== null ? 'default' : 'pointer',
-                    }}
-                  >
-                    {/* Identical Jump button double-chevron SVG rotated 180deg (pointing DOWN) */}
-                    <svg
-                      width="28"
-                      height="28"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden="true"
-                      style={{ transform: 'rotate(180deg)' }}
-                    >
-                      <path
-                        d="M6.5 11.5L12 6.5L17.5 11.5"
-                        stroke="#FFFFFF"
-                        strokeWidth="2.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M6.5 17.5L12 12.5L17.5 17.5"
-                        stroke="rgba(225, 228, 246, 0.72)"
-                        strokeWidth="2.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-
-                    {flightCancelCd !== null && (
-                      <div
-                        ref={flightCancelVeilRef}
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-0 z-20"
-                        style={{
-                          backgroundColor: 'rgba(10, 11, 24, 0.74)',
-                          borderTop: '1.5px solid rgba(190, 195, 255, 0.32)',
-                          transformOrigin: 'bottom center',
-                          transform: 'scaleY(1)',
-                          willChange: 'transform',
-                        }}
-                      />
-                    )}
-                  </button>
-                )}
-
-                {/* Phoenix Force & Dark Phoenix & White Phoenix: Flight-Only Solar Dive Button beside Sprint */}
-                {isPhoenixCharacter && (flightActive || phoenixDivePhase !== 'idle') && (
-                  <button
-                    type="button"
-                    aria-label={activePhoenixDiveDef.name}
-                    aria-pressed={phoenixDivePhase !== 'idle'}
-                    disabled={
-                      phoenixDivePhase === 'ascending' ||
-                      phoenixDivePhase === 'diving' ||
-                      (phoenixDivePhase === 'idle' && phoenixDiveCd !== null)
-                    }
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleCastPhoenixDive();
-                    }}
-                    onPointerMove={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => e.stopPropagation()}
-                    onPointerCancel={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleCastPhoenixDive();
-                      }
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
-                    style={{
-                      width: 'clamp(50px, 7.8vw, 60px)',
-                      height: 'clamp(50px, 7.8vw, 60px)',
-                      right:
-                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                      bottom:
-                        'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                      backgroundColor:
-                        phoenixDivePhase === 'hovering'
-                          ? '#4D1F0B'
-                          : phoenixDivePhase !== 'idle'
-                            ? '#33150A'
-                            : '#2F1D3D',
-                      backgroundImage: PURPLE_DOT_PATTERN,
-                      backgroundSize: '11px 11px',
-                      backgroundPosition: '0 0, 5.5px 5.5px',
-                      border:
-                        phoenixDivePhase === 'hovering'
-                          ? '2.5px solid #FFB347'
-                          : '2.5px solid #0B0D18',
-                      boxShadow:
-                        phoenixDivePhase === 'hovering'
-                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 167, 38, 0.55)'
-                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 167, 38, 0.42)',
-                      transform:
-                        phoenixDivePhase !== 'idle'
-                          ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
-                          : 'rotate(-1.5deg)',
-                      transition:
-                        'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 110ms ease, box-shadow 110ms ease',
-                      touchAction: 'none',
-                      cursor:
-                        phoenixDivePhase === 'ascending' ||
-                        phoenixDivePhase === 'diving' ||
-                        (phoenixDivePhase === 'idle' && phoenixDiveCd !== null)
-                          ? 'default'
-                          : 'pointer',
-                    }}
-                  >
-                    <AbilityIcon id="phoenix-dive" size={20} />
-                    <span
-                      className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
-                      style={{
-                        fontSize: 'clamp(6.2px, 0.88vw, 7.6px)',
-                        textShadow: '0 1.5px 0 #0B0D18',
-                      }}
-                    >
-                      {phoenixDivePhase === 'hovering' ? 'LAUNCH' : 'DIVE'}
-                    </span>
-
-                    {phoenixDivePhase === 'hovering' && (
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
-                      >
-                        <div
-                          ref={phoenixHoverBarRef}
-                          className="h-full w-full bg-[#FFA726]"
-                          style={{
-                            transformOrigin: 'left center',
-                            transform: 'scaleX(1)',
-                            willChange: 'transform',
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    {phoenixDivePhase === 'idle' && phoenixDiveCd !== null && (
-                      <div
-                        ref={phoenixDiveVeilRef}
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-0 z-20"
-                        style={{
-                          backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                          borderTop: '1.5px solid rgba(255, 167, 38, 0.45)',
-                          transformOrigin: 'bottom center',
-                          transform: 'scaleY(1)',
-                          willChange: 'transform',
-                        }}
-                      />
-                    )}
-                  </button>
-                )}
-
-                {/* Vampire Only: Flight-Only Ground Stomp Button beside Sprint */}
-                {selectedCharacter.id === 'vampire' &&
-                  (flightActive || vampireStompDiving) && (
+                    {isPc && <KeybindBadge label="Q" />}
                     <button
                       type="button"
-                      aria-label={VAMPIRE_GROUND_STOMP.name}
-                      aria-pressed={vampireStompDiving}
-                      disabled={vampireStompDiving || vampireStompCd !== null}
+                      aria-label={activeHelaCrownDef.name}
+                      aria-pressed={crownActive}
+                      disabled={!crownActive && crownCd !== null}
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        handleCastVampireGroundStomp();
+                        if (isPc) e.currentTarget.blur();
+                        handleToggleCrown();
                       }}
                       onPointerMove={(e) => e.stopPropagation()}
                       onPointerUp={(e) => e.stopPropagation()}
@@ -4221,247 +4255,48 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          handleCastVampireGroundStomp();
+                          handleToggleCrown();
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                      className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                       style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: vampireStompDiving ? '#3B280E' : '#25264A',
+                        width: isPc ? 'var(--pc-aux, 76px)' : 'clamp(44px, 7.0vw, 54px)',
+                        height: isPc ? 'var(--pc-aux, 76px)' : 'clamp(44px, 7.0vw, 54px)',
+                        backgroundColor: crownActive ? '#172822' : '#353664',
                         backgroundImage: PURPLE_DOT_PATTERN,
                         backgroundSize: '11px 11px',
                         backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: vampireStompDiving
-                          ? '2.5px solid #FFD84D'
+                        border: crownActive
+                          ? '2.5px solid #3CE66B'
                           : '2.5px solid #0B0D18',
-                        boxShadow: vampireStompDiving
-                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 216, 77, 0.5)'
-                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 216, 77, 0.36)',
-                        transform: vampireStompDiving
-                          ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
-                          : 'rotate(-1.5deg)',
-                        transition:
-                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 110ms ease, box-shadow 110ms ease',
+                        boxShadow: crownActive
+                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(60, 230, 107, 0.45)'
+                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(155, 160, 230, 0.22)',
+                        transition: 'background-color 120ms ease, box-shadow 120ms ease',
                         touchAction: 'none',
-                        cursor:
-                          vampireStompDiving || vampireStompCd !== null
-                            ? 'default'
-                            : 'pointer',
+                        cursor: !crownActive && crownCd !== null ? 'default' : 'pointer',
                       }}
                     >
-                      <AbilityIcon id="ground-stomp" size={20} />
+                      <AbilityIcon id="crown-form" size={isPc ? 30 : 20} />
                       <span
-                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                        className="font-cartoon font-bold italic uppercase leading-none text-white"
                         style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                          textShadow: '0 1.5px 0 #0B0D18',
+                          fontSize: isPc ? '11.2px' : 'clamp(6.2px, 0.88vw, 7.4px)',
+                          textShadow: '0 1px 0 #0B0D18',
                         }}
                       >
-                        STOMP
+                        CROWN
                       </span>
 
-                      {vampireStompCd !== null && !vampireStompDiving && (
-                        <div
-                          ref={vampireStompVeilRef}
-                          aria-hidden="true"
-                          className="pointer-events-none absolute inset-0 z-20"
-                          style={{
-                            backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                            borderTop: '1.5px solid rgba(255, 216, 77, 0.45)',
-                            transformOrigin: 'bottom center',
-                            transform: 'scaleY(1)',
-                            willChange: 'transform',
-                          }}
-                        />
-                      )}
-                    </button>
-                  )}
-
-                {/* Vision Only: Intangibility ("PHASE") Button beside Sprint while Flight is active */}
-                {selectedCharacter.id === 'vision' && flightActive && (
-                  <button
-                    type="button"
-                    aria-label={VISION_INTANGIBILITY.name}
-                    aria-pressed={visionIntangibleActive}
-                    disabled={
-                      (!visionIntangibleActive && visionPhaseCd !== null) ||
-                      visionHeadGripActive
-                    }
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleToggleIntangibility();
-                    }}
-                    onPointerMove={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => e.stopPropagation()}
-                    onPointerCancel={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleToggleIntangibility();
-                      }
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
-                    style={{
-                      width: 'clamp(50px, 7.8vw, 60px)',
-                      height: 'clamp(50px, 7.8vw, 60px)',
-                      right:
-                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                      bottom:
-                        'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                      backgroundColor: visionIntangibleActive
-                        ? '#3B3014'
-                        : '#25264A',
-                      backgroundImage: PURPLE_DOT_PATTERN,
-                      backgroundSize: '11px 11px',
-                      backgroundPosition: '0 0, 5.5px 5.5px',
-                      border: visionIntangibleActive
-                        ? '2.5px solid #FFE45C'
-                        : '2.5px solid #0B0D18',
-                      boxShadow: visionIntangibleActive
-                        ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 228, 92, 0.45)'
-                        : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 228, 92, 0.34)',
-                      opacity: visionHeadGripActive ? 0.48 : 1,
-                      transform: visionIntangibleActive
-                        ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
-                        : 'rotate(-1.5deg)',
-                      transition:
-                        'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 110ms ease, box-shadow 110ms ease, opacity 120ms ease',
-                      touchAction: 'none',
-                      cursor:
-                        (!visionIntangibleActive && visionPhaseCd !== null) ||
-                        visionHeadGripActive
-                          ? 'default'
-                          : 'pointer',
-                    }}
-                  >
-                    <AbilityIcon id="intangibility" size={20} />
-                    <span
-                      className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
-                      style={{
-                        fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                        textShadow: '0 1.5px 0 #0B0D18',
-                      }}
-                    >
-                      PHASE
-                    </span>
-
-                    {visionIntangibleActive && (
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
-                      >
-                        <div
-                          ref={visionIntangibleBarRef}
-                          className="h-full w-full bg-[#FFE45C]"
-                          style={{
-                            transformOrigin: 'left center',
-                            transform: 'scaleX(1)',
-                            willChange: 'transform',
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    {visionPhaseCd !== null && !visionIntangibleActive && (
-                      <div
-                        ref={visionPhaseVeilRef}
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-0 z-20"
-                        style={{
-                          backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                          borderTop: '1.5px solid rgba(255, 228, 92, 0.45)',
-                          transformOrigin: 'bottom center',
-                          transform: 'scaleY(1)',
-                          willChange: 'transform',
-                        }}
-                      />
-                    )}
-                  </button>
-                )}
-
-                {/* Doctor Strange Only (Default Skin): Mystic Shield Button beside Sprint while Flight is active */}
-                {selectedCharacter.id === 'doctor-strange' &&
-                  selectedSkinId !== 'ancient-one' &&
-                  flightActive && (
-                    <button
-                      type="button"
-                      aria-label={MYSTIC_SHIELD_ABILITY.name}
-                      aria-pressed={strangeShieldActive}
-                      disabled={!strangeShieldActive && strangeShieldCd !== null}
-                      onPointerDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleToggleMysticShield();
-                      }}
-                      onPointerMove={(e) => e.stopPropagation()}
-                      onPointerUp={(e) => e.stopPropagation()}
-                      onPointerCancel={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleToggleMysticShield();
-                        }
-                      }}
-                      onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
-                      style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: strangeShieldActive
-                          ? '#44260D'
-                          : '#25264A',
-                        backgroundImage: PURPLE_DOT_PATTERN,
-                        backgroundSize: '11px 11px',
-                        backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: strangeShieldActive
-                          ? '2.5px solid #FFA438'
-                          : '2.5px solid #0B0D18',
-                        boxShadow: strangeShieldActive
-                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 164, 56, 0.45)'
-                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 164, 56, 0.34)',
-                        transform: strangeShieldActive
-                          ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
-                          : 'rotate(-1.5deg)',
-                        transition:
-                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 110ms ease, box-shadow 110ms ease',
-                        touchAction: 'none',
-                        cursor:
-                          !strangeShieldActive && strangeShieldCd !== null
-                            ? 'default'
-                            : 'pointer',
-                      }}
-                    >
-                      <AbilityIcon id="mystic-shield" size={20} />
-                      <span
-                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
-                        style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                          textShadow: '0 1.5px 0 #0B0D18',
-                        }}
-                      >
-                        SHIELD
-                      </span>
-
-                      {strangeShieldActive && (
+                      {crownActive && (
                         <div
                           aria-hidden="true"
                           className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
                         >
                           <div
-                            ref={strangeShieldBarRef}
-                            className="h-full w-full bg-[#FFA438]"
+                            ref={crownBarRef}
+                            className="h-full w-full bg-[#3CE66B]"
                             style={{
                               transformOrigin: 'left center',
                               transform: 'scaleX(1)',
@@ -4471,14 +4306,14 @@ export default function App() {
                         </div>
                       )}
 
-                      {strangeShieldCd !== null && !strangeShieldActive && (
+                      {crownCd !== null && !crownActive && (
                         <div
-                          ref={strangeShieldVeilRef}
+                          ref={crownVeilRef}
                           aria-hidden="true"
                           className="pointer-events-none absolute inset-0 z-20"
                           style={{
-                            backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                            borderTop: '1.5px solid rgba(255, 164, 56, 0.45)',
+                            backgroundColor: 'rgba(10, 11, 24, 0.74)',
+                            borderTop: '1.5px solid rgba(60, 230, 107, 0.4)',
                             transformOrigin: 'bottom center',
                             transform: 'scaleY(1)',
                             willChange: 'transform',
@@ -4486,90 +4321,33 @@ export default function App() {
                         />
                       )}
                     </button>
-                  )}
-
-                {/* Emma Frost Only: Diamond Shard Projectile Button beside Run while Diamond Form is active */}
-                {isEmmaCharacter && diamondActive && (
-                  <button
-                    type="button"
-                    aria-label={EMMA_DIAMOND_PROJECTILE.name}
-                    disabled={diamondProjCd !== null}
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleCastDiamondProjectile();
-                    }}
-                    onPointerMove={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => e.stopPropagation()}
-                    onPointerCancel={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleCastDiamondProjectile();
-                      }
-                    }}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
-                    style={{
-                      width: 'clamp(50px, 7.8vw, 60px)',
-                      height: 'clamp(50px, 7.8vw, 60px)',
-                      right:
-                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                      bottom:
-                        'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                      backgroundColor: '#253352',
-                      backgroundImage: PURPLE_DOT_PATTERN,
-                      backgroundSize: '11px 11px',
-                      backgroundPosition: '0 0, 5.5px 5.5px',
-                      border: '2.5px solid #D8F5FF',
-                      boxShadow:
-                        '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(216, 245, 255, 0.42)',
-                      transform: 'rotate(-1.5deg)',
-                      transition:
-                        'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
-                      touchAction: 'none',
-                      cursor: diamondProjCd !== null ? 'default' : 'pointer',
-                    }}
-                  >
-                    <AbilityIcon id="diamond-projectile" size={20} />
-                    <span
-                      className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
-                      style={{
-                        fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                        textShadow: '0 1.5px 0 #0B0D18',
-                      }}
-                    >
-                      SHARD
-                    </span>
-
-                    {diamondProjCd !== null && (
-                      <div
-                        ref={diamondProjVeilRef}
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-0 z-20"
-                        style={{
-                          backgroundColor: 'rgba(10, 11, 24, 0.74)',
-                          borderTop: '1.5px solid rgba(216, 245, 255, 0.45)',
-                          transformOrigin: 'bottom center',
-                          transform: 'scaleY(1)',
-                          willChange: 'transform',
-                        }}
-                      />
-                    )}
-                  </button>
+                  </div>
                 )}
 
-                {/* Hela Only: Throw Sword & Close-Range Slash Buttons beside Run while Sword Summon is active */}
-                {isHelaCharacter && swordSummonActive && (
-                  <>
+                {/* Scarlet Witch Only: Flight Cancellation + Red Shockwave Button beside Sprint */}
+                {selectedCharacter.id === 'scarlet-witch' && flightActive && (
+                  <div
+                    className="fixed z-20"
+                    style={{
+                      right: isPc
+                        ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                        : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                      bottom: isPc
+                        ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                        : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                      transform: 'rotate(-1.5deg)',
+                    }}
+                  >
+                    {isPc && <KeybindBadge label="F" />}
                     <button
                       type="button"
-                      aria-label={activeHelaSlashDef.name}
-                      disabled={swordSlashCd !== null}
+                      aria-label="Flight Cancellation"
+                      disabled={flightCancelCd !== null}
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        handleCastSwordSlash();
+                        if (isPc) e.currentTarget.blur();
+                        handleScarletFlightCancel();
                       }}
                       onPointerMove={(e) => e.stopPropagation()}
                       onPointerUp={(e) => e.stopPropagation()}
@@ -4577,51 +4355,59 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          handleCastSwordSlash();
+                          handleScarletFlightCancel();
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                      className="relative flex items-center justify-center overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
                       style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px) + clamp(50px, 7.8vw, 60px) + 10px)',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: '#1E2D2C',
+                        width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(54px, 8.4vw, 66px)',
+                        height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(54px, 8.4vw, 66px)',
+                        backgroundColor: '#353664',
                         backgroundImage: PURPLE_DOT_PATTERN,
                         backgroundSize: '11px 11px',
                         backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: '2.5px solid #3CE66B',
+                        border: '2.5px solid #0B0D18',
                         boxShadow:
-                          '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(60, 230, 107, 0.42)',
-                        transform: 'rotate(1.4deg)',
+                          '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 118, 142, 0.32)',
                         transition:
                           'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
                         touchAction: 'none',
-                        cursor: swordSlashCd !== null ? 'default' : 'pointer',
+                        cursor: flightCancelCd !== null ? 'default' : 'pointer',
                       }}
                     >
-                      <AbilityIcon id="sword-slash" size={20} />
-                      <span
-                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
-                        style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                          textShadow: '0 1.5px 0 #0B0D18',
-                        }}
+                      <svg
+                        width={isPc ? '36' : '28'}
+                        height={isPc ? '36' : '28'}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        aria-hidden="true"
+                        style={{ transform: 'rotate(180deg)' }}
                       >
-                        SLASH
-                      </span>
+                        <path
+                          d="M6.5 11.5L12 6.5L17.5 11.5"
+                          stroke="#FFFFFF"
+                          strokeWidth="2.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M6.5 17.5L12 12.5L17.5 17.5"
+                          stroke="rgba(225, 228, 246, 0.72)"
+                          strokeWidth="2.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
 
-                      {swordSlashCd !== null && (
+                      {flightCancelCd !== null && (
                         <div
-                          ref={swordSlashVeilRef}
+                          ref={flightCancelVeilRef}
                           aria-hidden="true"
                           className="pointer-events-none absolute inset-0 z-20"
                           style={{
-                            backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                            borderTop: '1.5px solid rgba(60, 230, 107, 0.42)',
+                            backgroundColor: 'rgba(10, 11, 24, 0.74)',
+                            borderTop: '1.5px solid rgba(190, 195, 255, 0.32)',
                             transformOrigin: 'bottom center',
                             transform: 'scaleY(1)',
                             willChange: 'transform',
@@ -4629,15 +4415,42 @@ export default function App() {
                         />
                       )}
                     </button>
+                  </div>
+                )}
 
+                {/* Phoenix Force & Dark Phoenix & White Phoenix: Flight-Only Solar Dive Button beside Sprint */}
+                {isPhoenixCharacter && (flightActive || phoenixDivePhase !== 'idle') && (
+                  <div
+                    className="animate-cartoon-pop-in fixed z-20"
+                    style={{
+                      right: isPc
+                        ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                        : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                      bottom: isPc
+                        ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                        : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                      transform:
+                        phoenixDivePhase !== 'idle'
+                          ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
+                          : 'rotate(-1.5deg)',
+                      transition: 'transform 90ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                  >
+                    {isPc && <KeybindBadge label="E" />}
                     <button
                       type="button"
-                      aria-label={activeHelaThrowDef.name}
-                      disabled={!swordThrowReady || swordThrowCd !== null}
+                      aria-label={activePhoenixDiveDef.name}
+                      aria-pressed={phoenixDivePhase !== 'idle'}
+                      disabled={
+                        phoenixDivePhase === 'ascending' ||
+                        phoenixDivePhase === 'diving' ||
+                        (phoenixDivePhase === 'idle' && phoenixDiveCd !== null)
+                      }
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        handleThrowNecrosword();
+                        if (isPc) e.currentTarget.blur();
+                        handleCastPhoenixDive();
                       }}
                       onPointerMove={(e) => e.stopPropagation()}
                       onPointerUp={(e) => e.stopPropagation()}
@@ -4645,57 +4458,77 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          handleThrowNecrosword();
+                          handleCastPhoenixDive();
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                      className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
                       style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: '#1E2D2C',
+                        width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                        height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                        backgroundColor:
+                          phoenixDivePhase === 'hovering'
+                            ? '#4D1F0B'
+                            : phoenixDivePhase !== 'idle'
+                              ? '#33150A'
+                              : '#2F1D3D',
                         backgroundImage: PURPLE_DOT_PATTERN,
                         backgroundSize: '11px 11px',
                         backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: swordThrowReady
-                          ? '2.5px solid #3CE66B'
-                          : '2.5px solid #0B0D18',
-                        boxShadow: swordThrowReady
-                          ? '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(60, 230, 107, 0.42)'
-                          : '2px 3px 0 rgba(8, 10, 18, 0.85)',
-                        transform: 'rotate(-1.5deg)',
-                        transition:
-                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
+                        border:
+                          phoenixDivePhase === 'hovering'
+                            ? '2.5px solid #FFB347'
+                            : '2.5px solid #0B0D18',
+                        boxShadow:
+                          phoenixDivePhase === 'hovering'
+                            ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 167, 38, 0.55)'
+                            : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 167, 38, 0.42)',
+                        transition: 'background-color 110ms ease, box-shadow 110ms ease',
                         touchAction: 'none',
                         cursor:
-                          !swordThrowReady || swordThrowCd !== null
+                          phoenixDivePhase === 'ascending' ||
+                          phoenixDivePhase === 'diving' ||
+                          (phoenixDivePhase === 'idle' && phoenixDiveCd !== null)
                             ? 'default'
                             : 'pointer',
                       }}
                     >
-                      <AbilityIcon id="throw-sword" size={20} />
+                      <AbilityIcon id="phoenix-dive" size={isPc ? 32 : 20} />
                       <span
                         className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
                         style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
+                          fontSize: isPc ? '11.5px' : 'clamp(6.2px, 0.88vw, 7.6px)',
                           textShadow: '0 1.5px 0 #0B0D18',
                         }}
                       >
-                        THROW
+                        {phoenixDivePhase === 'hovering' ? 'LAUNCH' : 'DIVE'}
                       </span>
 
-                      {(!swordThrowReady || swordThrowCd !== null) && (
+                      {phoenixDivePhase === 'hovering' && (
                         <div
-                          ref={swordThrowVeilRef}
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
+                        >
+                          <div
+                            ref={phoenixHoverBarRef}
+                            className="h-full w-full bg-[#FFA726]"
+                            style={{
+                              transformOrigin: 'left center',
+                              transform: 'scaleX(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        </div>
+                      )}
+
+                      {phoenixDivePhase === 'idle' && phoenixDiveCd !== null && (
+                        <div
+                          ref={phoenixDiveVeilRef}
                           aria-hidden="true"
                           className="pointer-events-none absolute inset-0 z-20"
                           style={{
                             backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                            borderTop: '1.5px solid rgba(60, 230, 107, 0.42)',
+                            borderTop: '1.5px solid rgba(255, 167, 38, 0.45)',
                             transformOrigin: 'bottom center',
                             transform: 'scaleY(1)',
                             willChange: 'transform',
@@ -4703,6 +4536,571 @@ export default function App() {
                         />
                       )}
                     </button>
+                  </div>
+                )}
+
+                {/* Vampire Only: Flight-Only Ground Stomp Button beside Sprint */}
+                {selectedCharacter.id === 'vampire' &&
+                  (flightActive || vampireStompDiving) && (
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
+                      style={{
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                        transform: vampireStompDiving
+                          ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
+                          : 'rotate(-1.5deg)',
+                        transition: 'transform 90ms cubic-bezier(0.16, 1, 0.3, 1)',
+                      }}
+                    >
+                      {isPc && <KeybindBadge label="E" />}
+                      <button
+                        type="button"
+                        aria-label={VAMPIRE_GROUND_STOMP.name}
+                        aria-pressed={vampireStompDiving}
+                        disabled={vampireStompDiving || vampireStompCd !== null}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleCastVampireGroundStomp();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleCastVampireGroundStomp();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                        style={{
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: vampireStompDiving ? '#3B280E' : '#25264A',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: vampireStompDiving
+                            ? '2.5px solid #FFD84D'
+                            : '2.5px solid #0B0D18',
+                          boxShadow: vampireStompDiving
+                            ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 216, 77, 0.5)'
+                            : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 216, 77, 0.36)',
+                          transition: 'background-color 110ms ease, box-shadow 110ms ease',
+                          touchAction: 'none',
+                          cursor:
+                            vampireStompDiving || vampireStompCd !== null
+                              ? 'default'
+                              : 'pointer',
+                        }}
+                      >
+                        <AbilityIcon id="ground-stomp" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                          style={{
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
+                          }}
+                        >
+                          STOMP
+                        </span>
+
+                        {vampireStompCd !== null && !vampireStompDiving && (
+                          <div
+                            ref={vampireStompVeilRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 z-20"
+                            style={{
+                              backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                              borderTop: '1.5px solid rgba(255, 216, 77, 0.45)',
+                              transformOrigin: 'bottom center',
+                              transform: 'scaleY(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                {/* Vision Only: Intangibility ("PHASE") Button beside Sprint while Flight is active */}
+                {selectedCharacter.id === 'vision' && flightActive && (
+                  <div
+                    className="animate-cartoon-pop-in fixed z-20"
+                    style={{
+                      right: isPc
+                        ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                        : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                      bottom: isPc
+                        ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                        : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                      transform: visionIntangibleActive
+                        ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
+                        : 'rotate(-1.5deg)',
+                      opacity: visionHeadGripActive ? 0.48 : 1,
+                      transition:
+                        'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), opacity 120ms ease',
+                    }}
+                  >
+                    {isPc && <KeybindBadge label="E" />}
+                    <button
+                      type="button"
+                      aria-label={VISION_INTANGIBILITY.name}
+                      aria-pressed={visionIntangibleActive}
+                      disabled={
+                        (!visionIntangibleActive && visionPhaseCd !== null) ||
+                        visionHeadGripActive
+                      }
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
+                        handleToggleIntangibility();
+                      }}
+                      onPointerMove={(e) => e.stopPropagation()}
+                      onPointerUp={(e) => e.stopPropagation()}
+                      onPointerCancel={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleToggleIntangibility();
+                        }
+                      }}
+                      onContextMenu={(e) => e.preventDefault()}
+                      className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                      style={{
+                        width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                        height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                        backgroundColor: visionIntangibleActive
+                          ? '#3B3014'
+                          : '#25264A',
+                        backgroundImage: PURPLE_DOT_PATTERN,
+                        backgroundSize: '11px 11px',
+                        backgroundPosition: '0 0, 5.5px 5.5px',
+                        border: visionIntangibleActive
+                          ? '2.5px solid #FFE45C'
+                          : '2.5px solid #0B0D18',
+                        boxShadow: visionIntangibleActive
+                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 228, 92, 0.45)'
+                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 228, 92, 0.34)',
+                        transition: 'background-color 110ms ease, box-shadow 110ms ease',
+                        touchAction: 'none',
+                        cursor:
+                          (!visionIntangibleActive && visionPhaseCd !== null) ||
+                          visionHeadGripActive
+                            ? 'default'
+                            : 'pointer',
+                      }}
+                    >
+                      <AbilityIcon id="intangibility" size={isPc ? 32 : 20} />
+                      <span
+                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                        style={{
+                          fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                          textShadow: '0 1.5px 0 #0B0D18',
+                        }}
+                      >
+                        PHASE
+                      </span>
+
+                      {visionIntangibleActive && (
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
+                        >
+                          <div
+                            ref={visionIntangibleBarRef}
+                            className="h-full w-full bg-[#FFE45C]"
+                            style={{
+                              transformOrigin: 'left center',
+                              transform: 'scaleX(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        </div>
+                      )}
+
+                      {visionPhaseCd !== null && !visionIntangibleActive && (
+                        <div
+                          ref={visionPhaseVeilRef}
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 z-20"
+                          style={{
+                            backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                            borderTop: '1.5px solid rgba(255, 228, 92, 0.45)',
+                            transformOrigin: 'bottom center',
+                            transform: 'scaleY(1)',
+                            willChange: 'transform',
+                          }}
+                        />
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* Doctor Strange Only (Default Skin): Mystic Shield Button beside Sprint while Flight is active */}
+                {selectedCharacter.id === 'doctor-strange' &&
+                  selectedSkinId !== 'ancient-one' &&
+                  flightActive && (
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
+                      style={{
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                        transform: strangeShieldActive
+                          ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
+                          : 'rotate(-1.5deg)',
+                        transition: 'transform 90ms cubic-bezier(0.16, 1, 0.3, 1)',
+                      }}
+                    >
+                      {isPc && <KeybindBadge label="E" />}
+                      <button
+                        type="button"
+                        aria-label={MYSTIC_SHIELD_ABILITY.name}
+                        aria-pressed={strangeShieldActive}
+                        disabled={!strangeShieldActive && strangeShieldCd !== null}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleToggleMysticShield();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleToggleMysticShield();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                        style={{
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: strangeShieldActive
+                            ? '#44260D'
+                            : '#25264A',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: strangeShieldActive
+                            ? '2.5px solid #FFA438'
+                            : '2.5px solid #0B0D18',
+                          boxShadow: strangeShieldActive
+                            ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(255, 164, 56, 0.45)'
+                            : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(255, 164, 56, 0.34)',
+                          transition: 'background-color 110ms ease, box-shadow 110ms ease',
+                          touchAction: 'none',
+                          cursor:
+                            !strangeShieldActive && strangeShieldCd !== null
+                              ? 'default'
+                              : 'pointer',
+                        }}
+                      >
+                        <AbilityIcon id="mystic-shield" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                          style={{
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
+                          }}
+                        >
+                          SHIELD
+                        </span>
+
+                        {strangeShieldActive && (
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-[4px] bg-[#0B0D18]/85"
+                          >
+                            <div
+                              ref={strangeShieldBarRef}
+                              className="h-full w-full bg-[#FFA438]"
+                              style={{
+                                transformOrigin: 'left center',
+                                transform: 'scaleX(1)',
+                                willChange: 'transform',
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        {strangeShieldCd !== null && !strangeShieldActive && (
+                          <div
+                            ref={strangeShieldVeilRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 z-20"
+                            style={{
+                              backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                              borderTop: '1.5px solid rgba(255, 164, 56, 0.45)',
+                              transformOrigin: 'bottom center',
+                              transform: 'scaleY(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                {/* Emma Frost Only: Diamond Shard Projectile Button beside Sprint while Diamond Form is active */}
+                {isEmmaCharacter && diamondActive && (
+                  <div
+                    className="animate-cartoon-pop-in fixed z-20"
+                    style={{
+                      right: isPc
+                        ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                        : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                      bottom: isPc
+                        ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                        : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                      transform: 'rotate(-1.5deg)',
+                    }}
+                  >
+                    {isPc && <KeybindBadge label="E" />}
+                    <button
+                      type="button"
+                      aria-label={EMMA_DIAMOND_PROJECTILE.name}
+                      disabled={diamondProjCd !== null}
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
+                        handleCastDiamondProjectile();
+                      }}
+                      onPointerMove={(e) => e.stopPropagation()}
+                      onPointerUp={(e) => e.stopPropagation()}
+                      onPointerCancel={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleCastDiamondProjectile();
+                        }
+                      }}
+                      onContextMenu={(e) => e.preventDefault()}
+                      className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                      style={{
+                        width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                        height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                        backgroundColor: '#253352',
+                        backgroundImage: PURPLE_DOT_PATTERN,
+                        backgroundSize: '11px 11px',
+                        backgroundPosition: '0 0, 5.5px 5.5px',
+                        border: '2.5px solid #D8F5FF',
+                        boxShadow:
+                          '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(216, 245, 255, 0.42)',
+                        transition:
+                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
+                        touchAction: 'none',
+                        cursor: diamondProjCd !== null ? 'default' : 'pointer',
+                      }}
+                    >
+                      <AbilityIcon id="diamond-projectile" size={isPc ? 32 : 20} />
+                      <span
+                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                        style={{
+                          fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                          textShadow: '0 1.5px 0 #0B0D18',
+                        }}
+                      >
+                        SHARD
+                      </span>
+
+                      {diamondProjCd !== null && (
+                        <div
+                          ref={diamondProjVeilRef}
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 z-20"
+                          style={{
+                            backgroundColor: 'rgba(10, 11, 24, 0.74)',
+                            borderTop: '1.5px solid rgba(216, 245, 255, 0.45)',
+                            transformOrigin: 'bottom center',
+                            transform: 'scaleY(1)',
+                            willChange: 'transform',
+                          }}
+                        />
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* Hela Only: Throw Sword & Close-Range Slash Buttons beside Sprint while Sword Summon is active */}
+                {isHelaCharacter && swordSummonActive && (
+                  <>
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
+                      style={{
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px) + var(--pc-sub, 82px) + var(--pc-sub-gap, 12px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px) + clamp(50px, 7.8vw, 60px) + 10px)',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                        transform: 'rotate(1.4deg)',
+                      }}
+                    >
+                      {isPc && <KeybindBadge label="R" />}
+                      <button
+                        type="button"
+                        aria-label={activeHelaSlashDef.name}
+                        disabled={swordSlashCd !== null}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleCastSwordSlash();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleCastSwordSlash();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                        style={{
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: '#1E2D2C',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: '2.5px solid #3CE66B',
+                          boxShadow:
+                            '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(60, 230, 107, 0.42)',
+                          transition:
+                            'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
+                          touchAction: 'none',
+                          cursor: swordSlashCd !== null ? 'default' : 'pointer',
+                        }}
+                      >
+                        <AbilityIcon id="sword-slash" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                          style={{
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
+                          }}
+                        >
+                          SLASH
+                        </span>
+
+                        {swordSlashCd !== null && (
+                          <div
+                            ref={swordSlashVeilRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 z-20"
+                            style={{
+                              backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                              borderTop: '1.5px solid rgba(60, 230, 107, 0.42)',
+                              transformOrigin: 'bottom center',
+                              transform: 'scaleY(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        )}
+                      </button>
+                    </div>
+
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
+                      style={{
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+                        transform: 'rotate(-1.5deg)',
+                      }}
+                    >
+                      {isPc && <KeybindBadge label="E" />}
+                      <button
+                        type="button"
+                        aria-label={activeHelaThrowDef.name}
+                        disabled={!swordThrowReady || swordThrowCd !== null}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleThrowNecrosword();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleThrowNecrosword();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                        style={{
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: '#1E2D2C',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: swordThrowReady
+                            ? '2.5px solid #3CE66B'
+                            : '2.5px solid #0B0D18',
+                          boxShadow: swordThrowReady
+                            ? '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(60, 230, 107, 0.42)'
+                            : '2px 3px 0 rgba(8, 10, 18, 0.85)',
+                          transition:
+                            'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
+                          touchAction: 'none',
+                          cursor:
+                            !swordThrowReady || swordThrowCd !== null
+                              ? 'default'
+                              : 'pointer',
+                        }}
+                      >
+                        <AbilityIcon id="throw-sword" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                          style={{
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
+                          }}
+                        >
+                          THROW
+                        </span>
+
+                        {(!swordThrowReady || swordThrowCd !== null) && (
+                          <div
+                            ref={swordThrowVeilRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 z-20"
+                            style={{
+                              backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                              borderTop: '1.5px solid rgba(60, 230, 107, 0.42)',
+                              transformOrigin: 'bottom center',
+                              transform: 'scaleY(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        )}
+                      </button>
+                    </div>
                   </>
                 )}
 
@@ -4710,105 +5108,82 @@ export default function App() {
                 {selectedCharacter.id === 'silver-surfer' &&
                   silverEnergy >= SILVER_SURFER_SONIC_UNLOCK &&
                   !teleportLocked && (
-                    <button
-                      type="button"
-                      aria-label={SILVER_SURFER_SONIC_BLAST.name}
-                      onPointerDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleCastSonicBlast();
-                      }}
-                      onPointerMove={(e) => e.stopPropagation()}
-                      onPointerUp={(e) => e.stopPropagation()}
-                      onPointerCancel={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleCastSonicBlast();
-                        }
-                      }}
-                      onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
                       style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: '#253147',
-                        backgroundImage: PURPLE_DOT_PATTERN,
-                        backgroundSize: '11px 11px',
-                        backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: '2.5px solid #E0F2FE',
-                        boxShadow:
-                          '2px 3px 0 rgba(8, 10, 18, 0.88), inset 0 0 0 1.5px rgba(156, 224, 255, 0.52)',
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
                         transform: 'rotate(-1.5deg)',
-                        transition:
-                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
-                        touchAction: 'none',
-                        cursor: 'pointer',
                       }}
                     >
-                      <AbilityIcon id="sonic-blast" size={20} />
-                      <span
-                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                      {isPc && <KeybindBadge label="E" />}
+                      <button
+                        type="button"
+                        aria-label={SILVER_SURFER_SONIC_BLAST.name}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleCastSonicBlast();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleCastSonicBlast();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
                         style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                          textShadow: '0 1.5px 0 #0B0D18',
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: '#253147',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: '2.5px solid #E0F2FE',
+                          boxShadow:
+                            '2px 3px 0 rgba(8, 10, 18, 0.88), inset 0 0 0 1.5px rgba(156, 224, 255, 0.52)',
+                          transition:
+                            'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
+                          touchAction: 'none',
+                          cursor: 'pointer',
                         }}
                       >
-                        SONIC
-                      </span>
-                    </button>
+                        <AbilityIcon id="sonic-blast" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                          style={{
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
+                          }}
+                        >
+                          SONIC
+                        </span>
+                      </button>
+                    </div>
                   )}
 
                 {/* Storm Only: Flight-Only Lightning Strike Button beside Sprint */}
                 {selectedCharacter.id === 'storm' &&
                   flightActive &&
                   !teleportLocked && (
-                    <button
-                      type="button"
-                      aria-label={STORM_LIGHTNING_STRIKE.name}
-                      aria-pressed={stormLightningActive}
-                      disabled={
-                        stormLightningActive ||
-                        stormIceSpearActive ||
-                        stormLightningCd !== null
-                      }
-                      onPointerDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleCastLightningStrike();
-                      }}
-                      onPointerMove={(e) => e.stopPropagation()}
-                      onPointerUp={(e) => e.stopPropagation()}
-                      onPointerCancel={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleCastLightningStrike();
-                        }
-                      }}
-                      onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
                       style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: stormLightningActive ? '#3A320C' : '#25264A',
-                        backgroundImage: PURPLE_DOT_PATTERN,
-                        backgroundSize: '11px 11px',
-                        backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: stormLightningActive
-                          ? '2.5px solid #FDE047'
-                          : '2.5px solid #0B0D18',
-                        boxShadow: stormLightningActive
-                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(253, 224, 71, 0.55)'
-                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(253, 224, 71, 0.44)',
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
                         transform: stormLightningActive
                           ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
                           : 'rotate(-1.5deg)',
@@ -4817,91 +5192,101 @@ export default function App() {
                             ? 0.56
                             : 1,
                         transition:
-                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 110ms ease, box-shadow 110ms ease, opacity 120ms ease',
-                        touchAction: 'none',
-                        cursor:
+                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), opacity 120ms ease',
+                      }}
+                    >
+                      {isPc && <KeybindBadge label="E" />}
+                      <button
+                        type="button"
+                        aria-label={STORM_LIGHTNING_STRIKE.name}
+                        aria-pressed={stormLightningActive}
+                        disabled={
                           stormLightningActive ||
                           stormIceSpearActive ||
                           stormLightningCd !== null
-                            ? 'default'
-                            : 'pointer',
-                      }}
-                    >
-                      <AbilityIcon id="lightning-strike" size={20} />
-                      <span
-                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                        }
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleCastLightningStrike();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleCastLightningStrike();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
                         style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                          textShadow: '0 1.5px 0 #0B0D18',
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: stormLightningActive ? '#3A320C' : '#25264A',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: stormLightningActive
+                            ? '2.5px solid #FDE047'
+                            : '2.5px solid #0B0D18',
+                          boxShadow: stormLightningActive
+                            ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(253, 224, 71, 0.55)'
+                            : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(253, 224, 71, 0.44)',
+                          transition: 'background-color 110ms ease, box-shadow 110ms ease',
+                          touchAction: 'none',
+                          cursor:
+                            stormLightningActive ||
+                            stormIceSpearActive ||
+                            stormLightningCd !== null
+                              ? 'default'
+                              : 'pointer',
                         }}
                       >
-                        STRIKE
-                      </span>
-
-                      {stormLightningCd !== null && !stormLightningActive && (
-                        <div
-                          ref={stormLightningVeilRef}
-                          aria-hidden="true"
-                          className="pointer-events-none absolute inset-0 z-20"
+                        <AbilityIcon id="lightning-strike" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
                           style={{
-                            backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                            borderTop: '1.5px solid rgba(253, 224, 71, 0.45)',
-                            transformOrigin: 'bottom center',
-                            transform: 'scaleY(1)',
-                            willChange: 'transform',
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
                           }}
-                        />
-                      )}
-                    </button>
+                        >
+                          STRIKE
+                        </span>
+
+                        {stormLightningCd !== null && !stormLightningActive && (
+                          <div
+                            ref={stormLightningVeilRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 z-20"
+                            style={{
+                              backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                              borderTop: '1.5px solid rgba(253, 224, 71, 0.45)',
+                              transformOrigin: 'bottom center',
+                              transform: 'scaleY(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        )}
+                      </button>
+                    </div>
                   )}
 
                 {/* Thor Only: Flight-Only Lightning Slam Button beside Sprint */}
                 {selectedCharacter.id === 'thor' &&
                   flightActive &&
                   !teleportLocked && (
-                    <button
-                      type="button"
-                      aria-label={THOR_LIGHTNING_SLAM.name}
-                      aria-pressed={thorSlamActive}
-                      disabled={
-                        thorSlamActive ||
-                        thorMjolnirAway ||
-                        thorStormBeamPhase !== 'idle' ||
-                        thorSlamCd !== null
-                      }
-                      onPointerDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleCastThorLightningSlam();
-                      }}
-                      onPointerMove={(e) => e.stopPropagation()}
-                      onPointerUp={(e) => e.stopPropagation()}
-                      onPointerCancel={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleCastThorLightningSlam();
-                        }
-                      }}
-                      onContextMenu={(e) => e.preventDefault()}
-                      className="animate-cartoon-pop-in fixed z-20 flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
+                    <div
+                      className="animate-cartoon-pop-in fixed z-20"
                       style={{
-                        width: 'clamp(50px, 7.8vw, 60px)',
-                        height: 'clamp(50px, 7.8vw, 60px)',
-                        right:
-                          'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-                        bottom:
-                          'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
-                        backgroundColor: thorSlamActive ? '#113047' : '#25264A',
-                        backgroundImage: PURPLE_DOT_PATTERN,
-                        backgroundSize: '11px 11px',
-                        backgroundPosition: '0 0, 5.5px 5.5px',
-                        border: thorSlamActive
-                          ? '2.5px solid #56D4FF'
-                          : '2.5px solid #0B0D18',
-                        boxShadow: thorSlamActive
-                          ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(86, 212, 255, 0.55)'
-                          : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(86, 212, 255, 0.44)',
+                        right: isPc
+                          ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))'
+                          : 'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+                        bottom: isPc
+                          ? 'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))'
+                          : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
                         transform: thorSlamActive
                           ? 'rotate(-1.5deg) translateY(1px) scale(0.96)'
                           : 'rotate(-1.5deg)',
@@ -4912,46 +5297,176 @@ export default function App() {
                             ? 0.56
                             : 1,
                         transition:
-                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 110ms ease, box-shadow 110ms ease, opacity 120ms ease',
-                        touchAction: 'none',
-                        cursor:
+                          'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), opacity 120ms ease',
+                      }}
+                    >
+                      {isPc && <KeybindBadge label="E" />}
+                      <button
+                        type="button"
+                        aria-label={THOR_LIGHTNING_SLAM.name}
+                        aria-pressed={thorSlamActive}
+                        disabled={
                           thorSlamActive ||
                           thorMjolnirAway ||
                           thorStormBeamPhase !== 'idle' ||
                           thorSlamCd !== null
-                            ? 'default'
-                            : 'pointer',
-                      }}
-                    >
-                      <AbilityIcon id="lightning-slam" size={20} />
-                      <span
-                        className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
+                        }
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (isPc) e.currentTarget.blur();
+                          handleCastThorLightningSlam();
+                        }}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onPointerCancel={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleCastThorLightningSlam();
+                          }
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95"
                         style={{
-                          fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
-                          textShadow: '0 1.5px 0 #0B0D18',
+                          width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                          backgroundColor: thorSlamActive ? '#113047' : '#25264A',
+                          backgroundImage: PURPLE_DOT_PATTERN,
+                          backgroundSize: '11px 11px',
+                          backgroundPosition: '0 0, 5.5px 5.5px',
+                          border: thorSlamActive
+                            ? '2.5px solid #56D4FF'
+                            : '2.5px solid #0B0D18',
+                          boxShadow: thorSlamActive
+                            ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(86, 212, 255, 0.55)'
+                            : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(86, 212, 255, 0.44)',
+                          transition: 'background-color 110ms ease, box-shadow 110ms ease',
+                          touchAction: 'none',
+                          cursor:
+                            thorSlamActive ||
+                            thorMjolnirAway ||
+                            thorStormBeamPhase !== 'idle' ||
+                            thorSlamCd !== null
+                              ? 'default'
+                              : 'pointer',
                         }}
                       >
-                        SLAM
-                      </span>
-
-                      {thorSlamCd !== null && !thorSlamActive && (
-                        <div
-                          ref={thorSlamVeilRef}
-                          aria-hidden="true"
-                          className="pointer-events-none absolute inset-0 z-20"
+                        <AbilityIcon id="lightning-slam" size={isPc ? 32 : 20} />
+                        <span
+                          className="font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
                           style={{
-                            backgroundColor: 'rgba(10, 11, 24, 0.76)',
-                            borderTop: '1.5px solid rgba(86, 212, 255, 0.45)',
-                            transformOrigin: 'bottom center',
-                            transform: 'scaleY(1)',
-                            willChange: 'transform',
+                            fontSize: isPc ? '11.5px' : 'clamp(6.4px, 0.9vw, 7.8px)',
+                            textShadow: '0 1.5px 0 #0B0D18',
                           }}
-                        />
-                      )}
-                    </button>
+                        >
+                          SLAM
+                        </span>
+
+                        {thorSlamCd !== null && !thorSlamActive && (
+                          <div
+                            ref={thorSlamVeilRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 z-20"
+                            style={{
+                              backgroundColor: 'rgba(10, 11, 24, 0.76)',
+                              borderTop: '1.5px solid rgba(86, 212, 255, 0.45)',
+                              transformOrigin: 'bottom center',
+                              transform: 'scaleY(1)',
+                              willChange: 'transform',
+                            }}
+                          />
+                        )}
+                      </button>
+                    </div>
                   )}
 
-                {/* Right Side: Sprint Toggle Button stacked immediately above Jump Button */}
+                {/* Mobile Only: Virtual Jump Button anchored in bottom-right corner (supports Jump & Flight Ascend hold) */}
+                {!isPc && (
+                  <button
+                    type="button"
+                    aria-label="Jump"
+                    aria-pressed={jumpBtnPressed}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (gamePhaseRef.current !== 'playing' || spawnLockedRef.current) return;
+                      try {
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                      } catch {
+                        // Ignore pointer capture errors
+                      }
+                      soundEngineRef.current?.unlock();
+                      setJumpBtnPressed(true);
+                      engineRef.current?.setJumpHeld(true);
+                      engineRef.current?.triggerJump();
+                    }}
+                    onPointerMove={(e) => e.stopPropagation()}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      try {
+                        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                          e.currentTarget.releasePointerCapture(e.pointerId);
+                        }
+                      } catch {
+                        // Ignore pointer release errors
+                      }
+                      setJumpBtnPressed(false);
+                      engineRef.current?.setJumpHeld(false);
+                    }}
+                    onPointerCancel={(e) => {
+                      e.stopPropagation();
+                      try {
+                        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                          e.currentTarget.releasePointerCapture(e.pointerId);
+                        }
+                      } catch {
+                        // Ignore pointer release errors
+                      }
+                      setJumpBtnPressed(false);
+                      engineRef.current?.setJumpHeld(false);
+                    }}
+                    onLostPointerCapture={() => {
+                      setJumpBtnPressed(false);
+                      engineRef.current?.setJumpHeld(false);
+                    }}
+                    onContextMenu={(e) => e.preventDefault()}
+                    className="fixed z-20 flex items-center justify-center rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    style={{
+                      width: 'clamp(50px, 7.8vw, 60px)',
+                      height: 'clamp(50px, 7.8vw, 60px)',
+                      right:
+                        'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + (clamp(54px, 8.4vw, 66px) - clamp(50px, 7.8vw, 60px)) / 2)',
+                      bottom: 'max(18px, calc(var(--stage-safe-bottom, 0px) + 12px))',
+                      backgroundColor: jumpBtnPressed ? '#1C1D3A' : '#353664',
+                      backgroundImage: PURPLE_DOT_PATTERN,
+                      backgroundSize: '11px 11px',
+                      backgroundPosition: '0 0, 5.5px 5.5px',
+                      border: '2.5px solid #0B0D18',
+                      boxShadow: jumpBtnPressed
+                        ? '1px 1.5px 0 rgba(8, 10, 18, 0.92), inset 0 0 0 2px rgba(185, 198, 255, 0.56)'
+                        : '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(155, 160, 230, 0.22)',
+                      transform: jumpBtnPressed
+                        ? 'rotate(-1.2deg) translateY(1px) scale(0.95)'
+                        : 'rotate(-1.2deg)',
+                      transition:
+                        'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 100ms ease, box-shadow 100ms ease',
+                      touchAction: 'none',
+                    }}
+                  >
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path
+                        d="M12 4.5L5.5 11.5H9.6V19.5H14.4V11.5H18.5L12 4.5Z"
+                        fill={jumpBtnPressed ? '#E4EAFF' : '#FFFFFF'}
+                        stroke="#0B0D18"
+                        strokeWidth="1.8"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                )}
+
+                {/* Right Side: Sprint Toggle Button (above Jump on Mobile, bottom-right corner on PC) */}
                 <button
                   type="button"
                   aria-label="Sprint"
@@ -4959,6 +5474,7 @@ export default function App() {
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (isPc) e.currentTarget.blur();
                     toggleSprint();
                   }}
                   onPointerMove={(e) => e.stopPropagation()}
@@ -4971,14 +5487,16 @@ export default function App() {
                     }
                   }}
                   onContextMenu={(e) => e.preventDefault()}
-                  className="fixed z-20 flex items-center justify-center rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  className="fixed z-20 flex items-center justify-center rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
                   style={{
-                    width: 'clamp(44px, 7.0vw, 54px)',
-                    height: 'clamp(44px, 7.0vw, 54px)',
-                    right:
-                      'calc(max(18px, calc(var(--stage-safe-right, 0px) + 12px)) + (clamp(54px, 8.4vw, 66px) - clamp(44px, 7.0vw, 54px)) / 2)',
-                    bottom:
-                      'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(54px, 8.4vw, 66px) + 10px)',
+                    width: isPc ? 'var(--pc-sprint, 90px)' : 'clamp(54px, 8.4vw, 66px)',
+                    height: isPc ? 'var(--pc-sprint, 90px)' : 'clamp(54px, 8.4vw, 66px)',
+                    right: isPc
+                      ? 'var(--pc-edge-r, 28px)'
+                      : 'max(18px, calc(var(--stage-safe-right, 0px) + 12px))',
+                    bottom: isPc
+                      ? 'var(--pc-edge-b, 28px)'
+                      : 'calc(max(18px, calc(var(--stage-safe-bottom, 0px) + 12px)) + clamp(50px, 7.8vw, 60px) + 10px)',
                     backgroundColor: sprintEnabled ? '#1C1D3A' : '#353664',
                     backgroundImage: PURPLE_DOT_PATTERN,
                     backgroundSize: '11px 11px',
@@ -4996,8 +5514,8 @@ export default function App() {
                   }}
                 >
                   <svg
-                    width="24"
-                    height="24"
+                    width={isPc ? '40' : '26'}
+                    height={isPc ? '40' : '26'}
                     viewBox="0 0 24 24"
                     fill="none"
                     aria-hidden="true"
@@ -5040,63 +5558,11 @@ export default function App() {
                   </svg>
                 </button>
 
-                {/* Right Side: Square Purple-Dotted Jump Button */}
-                <button
-                  ref={jumpBtnRef}
-                  type="button"
-                  aria-label="Jump"
-                  onPointerDown={handleJumpPointerDown}
-                  onPointerUp={handleJumpPointerEnd}
-                  onPointerCancel={handleJumpPointerEnd}
-                  onPointerLeave={handleJumpPointerEnd}
-                  onContextMenu={(e) => e.preventDefault()}
-                  className="fixed z-20 flex items-center justify-center rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
-                  style={{
-                    width: 'clamp(54px, 8.4vw, 66px)',
-                    height: 'clamp(54px, 8.4vw, 66px)',
-                    right: 'max(18px, calc(var(--stage-safe-right, 0px) + 12px))',
-                    bottom: 'max(18px, calc(var(--stage-safe-bottom, 0px) + 12px))',
-                    backgroundColor: '#353664',
-                    backgroundImage: PURPLE_DOT_PATTERN,
-                    backgroundSize: '11px 11px',
-                    backgroundPosition: '0 0, 5.5px 5.5px',
-                    border: '2.5px solid #0B0D18',
-                    boxShadow:
-                      '2px 3px 0 rgba(8, 10, 18, 0.85), inset 0 0 0 1.5px rgba(155, 160, 230, 0.22)',
-                    transform: 'rotate(-1.5deg)',
-                    transition:
-                      'transform 90ms cubic-bezier(0.16, 1, 0.3, 1), background-color 90ms ease',
-                    touchAction: 'none',
-                  }}
-                >
-                  <svg
-                    width="28"
-                    height="28"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M6.5 11.5L12 6.5L17.5 11.5"
-                      stroke="#FFFFFF"
-                      strokeWidth="2.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M6.5 17.5L12 12.5L17.5 17.5"
-                      stroke="rgba(225, 228, 246, 0.72)"
-                      strokeWidth="2.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-
                 {/* Cartoon 4/5-Slot Ability Interface */}
                 <AbilityBar
                   ref={abilityBarRef}
                   key={respawnKey}
+                  isPc={isPc}
                   abilities={resolvedCharacter.abilities}
                   locked={
                     spawnLocked ||
@@ -5230,6 +5696,7 @@ export default function App() {
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (isPc) e.currentTarget.blur();
                     handleTriggerDeath();
                   }}
                   onPointerMove={(e) => e.stopPropagation()}
@@ -5242,13 +5709,16 @@ export default function App() {
                     }
                   }}
                   onContextMenu={(e) => e.preventDefault()}
-                  className="fixed z-30 flex items-center justify-center rounded-[3px] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  className="fixed z-30 flex items-center justify-center rounded-[3px] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
                   style={{
-                    top: 'max(6px, var(--stage-safe-top, 0px))',
-                    right:
-                      'calc(max(10px, var(--stage-safe-right, 0px)) + clamp(36px, 5.6vw, 42px) + 8px)',
-                    width: 'clamp(36px, 5.6vw, 42px)',
-                    height: 'clamp(36px, 5.6vw, 42px)',
+                    top: isPc
+                      ? 'max(20px, var(--stage-safe-top, 0px))'
+                      : 'max(6px, var(--stage-safe-top, 0px))',
+                    right: isPc
+                      ? 'calc(max(24px, var(--stage-safe-right, 0px)) + clamp(56px, 4.2vw, 66px) + 12px)'
+                      : 'calc(max(10px, var(--stage-safe-right, 0px)) + clamp(36px, 5.6vw, 42px) + 8px)',
+                    width: isPc ? 'clamp(56px, 4.2vw, 66px)' : 'clamp(36px, 5.6vw, 42px)',
+                    height: isPc ? 'clamp(56px, 4.2vw, 66px)' : 'clamp(36px, 5.6vw, 42px)',
                     backgroundColor: '#562944',
                     backgroundImage: PURPLE_DOT_PATTERN,
                     backgroundSize: '10px 10px',
@@ -5260,8 +5730,8 @@ export default function App() {
                   }}
                 >
                   <svg
-                    width="20"
-                    height="20"
+                    width={isPc ? '29' : '20'}
+                    height={isPc ? '29' : '20'}
                     viewBox="0 0 24 24"
                     fill="none"
                     aria-hidden="true"
@@ -5295,9 +5765,13 @@ export default function App() {
                 {/* Test Map Only: Top-Center Controls (Spawn NPC, Bot, IA) */}
                 {selectedMapId === 'test' && (
                   <div
-                    className="fixed left-1/2 z-30 flex -translate-x-1/2 items-center gap-1.5"
+                    className={`fixed left-1/2 z-30 flex -translate-x-1/2 items-center ${
+                      isPc ? 'gap-3' : 'gap-1.5'
+                    }`}
                     style={{
-                      top: 'max(6px, var(--stage-safe-top, 0px))',
+                      top: isPc
+                        ? 'max(20px, var(--stage-safe-top, 0px))'
+                        : 'max(6px, var(--stage-safe-top, 0px))',
                     }}
                     onPointerDown={(e) => e.stopPropagation()}
                     onPointerMove={(e) => e.stopPropagation()}
@@ -5309,6 +5783,7 @@ export default function App() {
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
                         handleSpawnTestNpc();
                       }}
                       onKeyDown={(e) => {
@@ -5318,12 +5793,16 @@ export default function App() {
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="rounded-[5px] px-2.5 py-1 font-cartoon font-bold italic uppercase tracking-wide text-[#0B0D18] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap"
+                      className={`rounded-[5px] font-cartoon font-bold italic uppercase tracking-wide text-[#0B0D18] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap ${
+                        isPc ? 'px-5 py-2.5' : 'px-2.5 py-1'
+                      }`}
                       style={{
                         backgroundColor: '#FFD147',
                         border: '2px solid #0B0D18',
                         boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.88)',
-                        fontSize: 'clamp(9.5px, 1.3vw, 11.5px)',
+                        fontSize: isPc
+                          ? 'clamp(14.5px, 1.1vw, 17px)'
+                          : 'clamp(9.5px, 1.3vw, 11.5px)',
                         touchAction: 'manipulation',
                       }}
                     >
@@ -5336,6 +5815,7 @@ export default function App() {
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
                         handleToggleTestBot();
                       }}
                       onKeyDown={(e) => {
@@ -5345,7 +5825,9 @@ export default function App() {
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="rounded-[5px] px-2.5 py-1 font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap"
+                      className={`rounded-[5px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap ${
+                        isPc ? 'px-5 py-2.5' : 'px-2.5 py-1'
+                      }`}
                       style={{
                         backgroundColor: testBotEnabled ? '#C92638' : '#353664',
                         backgroundImage: PURPLE_DOT_PATTERN,
@@ -5355,7 +5837,9 @@ export default function App() {
                           ? '2px solid #FF6B7A'
                           : '2px solid #0B0D18',
                         boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.88)',
-                        fontSize: 'clamp(9.5px, 1.3vw, 11.5px)',
+                        fontSize: isPc
+                          ? 'clamp(14.5px, 1.1vw, 17px)'
+                          : 'clamp(9.5px, 1.3vw, 11.5px)',
                         textShadow: '0 1px 0 #0B0D18',
                         touchAction: 'manipulation',
                       }}
@@ -5369,6 +5853,7 @@ export default function App() {
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
                         handleToggleTestAi();
                       }}
                       onKeyDown={(e) => {
@@ -5378,7 +5863,9 @@ export default function App() {
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="rounded-[5px] px-2.5 py-1 font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap"
+                      className={`rounded-[5px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap ${
+                        isPc ? 'px-5 py-2.5' : 'px-2.5 py-1'
+                      }`}
                       style={{
                         backgroundColor: testAiEnabled ? '#1E7A56' : '#353664',
                         backgroundImage: PURPLE_DOT_PATTERN,
@@ -5388,7 +5875,9 @@ export default function App() {
                           ? '2px solid #4DFF9E'
                           : '2px solid #0B0D18',
                         boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.88)',
-                        fontSize: 'clamp(9.5px, 1.3vw, 11.5px)',
+                        fontSize: isPc
+                          ? 'clamp(14.5px, 1.1vw, 17px)'
+                          : 'clamp(9.5px, 1.3vw, 11.5px)',
                         textShadow: '0 1px 0 #0B0D18',
                         touchAction: 'manipulation',
                       }}
@@ -5401,10 +5890,16 @@ export default function App() {
                 {/* Test Map Only: Left-Side Utility Stack (Respawn, Change Character, Back) */}
                 {selectedMapId === 'test' && (
                   <div
-                    className="fixed z-30 flex flex-col items-start gap-1.5"
+                    className={`fixed z-30 flex flex-col items-start ${
+                      isPc ? 'gap-2.5' : 'gap-1.5'
+                    }`}
                     style={{
-                      left: 'max(10px, var(--stage-safe-left, 0px))',
-                      top: 'calc(max(6px, var(--stage-safe-top, 0px)) + clamp(80px, 12vw, 94px))',
+                      left: isPc
+                        ? 'max(24px, var(--stage-safe-left, 0px))'
+                        : 'max(10px, var(--stage-safe-left, 0px))',
+                      top: isPc
+                        ? 'calc(max(20px, var(--stage-safe-top, 0px)) + clamp(128px, 9.2vw, 156px))'
+                        : 'calc(max(6px, var(--stage-safe-top, 0px)) + clamp(80px, 12vw, 94px))',
                     }}
                     onPointerDown={(e) => e.stopPropagation()}
                     onPointerMove={(e) => e.stopPropagation()}
@@ -5416,6 +5911,7 @@ export default function App() {
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
                         handleInstantTestRespawn();
                       }}
                       onKeyDown={(e) => {
@@ -5425,12 +5921,16 @@ export default function App() {
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="rounded-[5px] px-2.5 py-1 font-cartoon font-bold italic uppercase tracking-wide text-[#0B0D18] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap"
+                      className={`rounded-[5px] font-cartoon font-bold italic uppercase tracking-wide text-[#0B0D18] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap ${
+                        isPc ? 'px-4.5 py-2' : 'px-2.5 py-1'
+                      }`}
                       style={{
                         backgroundColor: '#FFD147',
                         border: '2px solid #0B0D18',
                         boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.88)',
-                        fontSize: 'clamp(9px, 1.25vw, 11px)',
+                        fontSize: isPc
+                          ? 'clamp(13.5px, 1.05vw, 15.5px)'
+                          : 'clamp(9px, 1.25vw, 11px)',
                         touchAction: 'manipulation',
                       }}
                     >
@@ -5442,6 +5942,7 @@ export default function App() {
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
                         handleChangeCharacterFromTestMap();
                       }}
                       onKeyDown={(e) => {
@@ -5451,7 +5952,9 @@ export default function App() {
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="rounded-[5px] px-2.5 py-1 font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap"
+                      className={`rounded-[5px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap ${
+                        isPc ? 'px-4.5 py-2' : 'px-2.5 py-1'
+                      }`}
                       style={{
                         backgroundColor: '#353664',
                         backgroundImage: PURPLE_DOT_PATTERN,
@@ -5459,7 +5962,9 @@ export default function App() {
                         backgroundPosition: '0 0, 5px 5px',
                         border: '2px solid #0B0D18',
                         boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.88)',
-                        fontSize: 'clamp(9px, 1.25vw, 11px)',
+                        fontSize: isPc
+                          ? 'clamp(13.5px, 1.05vw, 15.5px)'
+                          : 'clamp(9px, 1.25vw, 11px)',
                         textShadow: '0 1px 0 #0B0D18',
                         touchAction: 'manipulation',
                       }}
@@ -5472,6 +5977,7 @@ export default function App() {
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (isPc) e.currentTarget.blur();
                         handleBackToMainMenu();
                       }}
                       onKeyDown={(e) => {
@@ -5481,7 +5987,9 @@ export default function App() {
                         }
                       }}
                       onContextMenu={(e) => e.preventDefault()}
-                      className="rounded-[5px] px-2.5 py-1 font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap"
+                      className={`rounded-[5px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer whitespace-nowrap ${
+                        isPc ? 'px-4.5 py-2' : 'px-2.5 py-1'
+                      }`}
                       style={{
                         backgroundColor: '#292B52',
                         backgroundImage: PURPLE_DOT_PATTERN,
@@ -5489,7 +5997,9 @@ export default function App() {
                         backgroundPosition: '0 0, 5px 5px',
                         border: '2px solid #0B0D18',
                         boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.88)',
-                        fontSize: 'clamp(9px, 1.25vw, 11px)',
+                        fontSize: isPc
+                          ? 'clamp(13.5px, 1.05vw, 15.5px)'
+                          : 'clamp(9px, 1.25vw, 11px)',
                         textShadow: '0 1px 0 #0B0D18',
                         touchAction: 'manipulation',
                       }}
@@ -5499,11 +6009,14 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Configurable Aim Reticle + Hit Confirmation Marker */}
-                <ReticleHud
-                  ref={reticleRef}
-                  styleType={graphicsSettings.crosshairStyle}
-                />
+                {/* Configurable Aim Reticle + Hit Confirmation Marker (Mobile Only; PC uses direct mouse crosshair) */}
+                {!isPc && (
+                  <ReticleHud
+                    ref={reticleRef}
+                    isPc={isPc}
+                    styleType={graphicsSettings.crosshairStyle}
+                  />
+                )}
               </>
             )}
 

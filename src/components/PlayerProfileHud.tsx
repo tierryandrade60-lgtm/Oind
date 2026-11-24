@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { getCharacterPortraitUrl } from '../game/characterPortrait';
 import { CharacterDefinition, resolveCharacterWithSkin } from '../game/characters';
+import { useIsPc } from '../utils/platform';
 
 export interface PlayerProfileHudHandle {
   setStamina: (stamina: number, maxStamina: number) => void;
@@ -43,6 +44,7 @@ export const PlayerProfileHud = memo(
     { character, skinId, hp, maxHp, healEvent },
     ref,
   ) {
+    const isPc = useIsPc();
     const [healingActive, setHealingActive] = useState(false);
     const staminaFillRef = useRef<HTMLDivElement | null>(null);
     const lastStaminaTransformRef = useRef('');
@@ -107,24 +109,24 @@ export const PlayerProfileHud = memo(
       <div
         className="pointer-events-none fixed z-20 flex items-center select-none"
         style={{
-          top: 'max(6px, var(--stage-safe-top, 0px))',
-          left: 'max(10px, var(--stage-safe-left, 0px))',
-          gap: 'clamp(6px, 1vw, 9px)',
+          top: isPc ? 'max(20px, var(--stage-safe-top, 0px))' : 'max(6px, var(--stage-safe-top, 0px))',
+          left: isPc ? 'max(24px, var(--stage-safe-left, 0px))' : 'max(10px, var(--stage-safe-left, 0px))',
+          gap: isPc ? '16px' : 'clamp(6px, 1vw, 9px)',
         }}
       >
         {/* Left Tilted Character Portrait Frame */}
         <div
           className="relative shrink-0 overflow-hidden"
           style={{
-            width: 'clamp(52px, 8.2vw, 70px)',
-            height: 'clamp(52px, 8.2vw, 70px)',
+            width: isPc ? 'clamp(98px, 6.8vw, 124px)' : 'clamp(52px, 8.2vw, 70px)',
+            height: isPc ? 'clamp(98px, 6.8vw, 124px)' : 'clamp(52px, 8.2vw, 70px)',
             backgroundColor: '#FFFFFF',
             border: healingActive ? '3px solid #4ADE80' : '3px solid #0B0D18',
             boxShadow: healingActive
               ? '2.5px 3.5px 0 rgba(8, 10, 18, 0.9), 0 0 12px rgba(74, 222, 128, 0.55)'
               : '2.5px 3.5px 0 rgba(8, 10, 18, 0.9)',
             transform: 'rotate(-2.8deg)',
-            padding: '3px',
+            padding: isPc ? '4px' : '3px',
             transition: 'border-color 180ms ease, box-shadow 220ms ease',
           }}
         >
@@ -157,11 +159,11 @@ export const PlayerProfileHud = memo(
         {/* Right Column: Name Banner + 10-Segment Health Bar + Stamina Bar + Flight Bar */}
         <div
           className="relative flex flex-col items-start"
-          style={{ gap: 'clamp(3px, 0.55vw, 5px)' }}
+          style={{ gap: isPc ? '7px' : 'clamp(3px, 0.55vw, 5px)' }}
         >
           {/* Slanted Dark Character Name Banner with Character-Specific Name Color */}
           <div
-            className="px-2.5 py-[2px]"
+            className={isPc ? 'px-4 py-1' : 'px-2.5 py-[2px]'}
             style={{
               backgroundColor: '#1C1E38',
               border: '2.5px solid #0B0D18',
@@ -172,7 +174,7 @@ export const PlayerProfileHud = memo(
             <span
               className="block font-cartoon font-extrabold italic uppercase leading-tight tracking-tight"
               style={{
-                fontSize: 'clamp(11px, 1.8vw, 15px)',
+                fontSize: isPc ? 'clamp(19px, 1.45vw, 24px)' : 'clamp(11px, 1.8vw, 15px)',
                 color: resolved.nameColor,
                 textShadow: '0 1.5px 0 #0B0D18',
               }}
@@ -185,8 +187,8 @@ export const PlayerProfileHud = memo(
           <div
             className="relative flex items-center"
             style={{
-              width: 'clamp(138px, 22vw, 205px)',
-              height: 'clamp(20px, 3vw, 26px)',
+              width: isPc ? 'clamp(290px, 21vw, 380px)' : 'clamp(138px, 22vw, 205px)',
+              height: isPc ? 'clamp(34px, 2.5vw, 42px)' : 'clamp(20px, 3vw, 26px)',
               backgroundColor: '#0B0D18',
               border: healingActive ? '2.5px solid #4ADE80' : '2.5px solid #0B0D18',
               boxShadow: healingActive
@@ -239,7 +241,7 @@ export const PlayerProfileHud = memo(
             <span
               className="pointer-events-none absolute inset-0 flex items-center justify-center font-cartoon font-extrabold italic tabular-nums text-white"
               style={{
-                fontSize: 'clamp(11px, 1.55vw, 14px)',
+                fontSize: isPc ? 'clamp(18px, 1.35vw, 22px)' : 'clamp(11px, 1.55vw, 14px)',
                 WebkitTextStroke: '3px #0B0D18',
                 paintOrder: 'stroke fill',
                 textShadow: '0 1.5px 0 #0B0D18',
@@ -252,9 +254,11 @@ export const PlayerProfileHud = memo(
             {healEvent && (
               <div
                 key={healEvent.key}
-                className="pointer-events-none absolute -right-2 -top-5 flex items-center gap-0.5 rounded-[5px] px-1.5 py-[1px] font-cartoon font-extrabold italic leading-none text-[#4ADE80]"
+                className={`pointer-events-none absolute -right-2 flex items-center gap-0.5 rounded-[5px] px-1.5 py-[1px] font-cartoon font-extrabold italic leading-none text-[#4ADE80] ${
+                  isPc ? '-top-7' : '-top-5'
+                }`}
                 style={{
-                  fontSize: 'clamp(12px, 1.8vw, 15px)',
+                  fontSize: isPc ? '20px' : 'clamp(12px, 1.8vw, 15px)',
                   backgroundColor: '#12291E',
                   border: '2px solid #0B0D18',
                   boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.9)',
@@ -275,8 +279,8 @@ export const PlayerProfileHud = memo(
           <div
             className="relative overflow-hidden"
             style={{
-              width: 'clamp(138px, 22vw, 205px)',
-              height: 'clamp(7px, 1vw, 9px)',
+              width: isPc ? 'clamp(290px, 21vw, 380px)' : 'clamp(138px, 22vw, 205px)',
+              height: isPc ? 'clamp(12px, 0.9vw, 15px)' : 'clamp(7px, 1vw, 9px)',
               backgroundColor: '#1F1810',
               border: '2px solid #0B0D18',
               boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.9)',
@@ -300,8 +304,8 @@ export const PlayerProfileHud = memo(
           <div
             className="relative overflow-hidden"
             style={{
-              width: 'clamp(138px, 22vw, 205px)',
-              height: 'clamp(7px, 1vw, 9px)',
+              width: isPc ? 'clamp(290px, 21vw, 380px)' : 'clamp(138px, 22vw, 205px)',
+              height: isPc ? 'clamp(12px, 0.9vw, 15px)' : 'clamp(7px, 1vw, 9px)',
               backgroundColor: '#131A30',
               border: '2px solid #0B0D18',
               boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.9)',

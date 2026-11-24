@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { MAP_REGISTRY, MapId } from '../game/maps';
+import { useIsPc } from '../utils/platform';
 
 const PURPLE_DOT_PATTERN =
   'radial-gradient(circle, rgba(142, 145, 218, 0.34) 1.45px, transparent 1.55px), radial-gradient(circle, rgba(142, 145, 218, 0.34) 1.45px, transparent 1.55px)';
@@ -17,6 +18,7 @@ export const MapSelector = memo(function MapSelector({
   onSelectMap,
   onBack,
 }: MapSelectorProps) {
+  const isPc = useIsPc();
   const [shotTick, setShotTick] = useState(0);
   const [fadeKey, setFadeKey] = useState(0);
   const prevMapIdRef = useRef<MapId>(selectedMapId);
@@ -48,10 +50,18 @@ export const MapSelector = memo(function MapSelector({
       style={{
         background:
           'radial-gradient(circle at 45% 42%, #7BC1FF 0%, #4281D6 56%, #23437D 100%)',
-        paddingTop: 'max(10px, var(--stage-safe-top, 0px))',
-        paddingBottom: 'max(10px, var(--stage-safe-bottom, 0px))',
-        paddingLeft: 'max(14px, var(--stage-safe-left, 0px))',
-        paddingRight: 'max(14px, var(--stage-safe-right, 0px))',
+        paddingTop: isPc
+          ? 'max(24px, var(--stage-safe-top, 0px))'
+          : 'max(10px, var(--stage-safe-top, 0px))',
+        paddingBottom: isPc
+          ? 'max(24px, var(--stage-safe-bottom, 0px))'
+          : 'max(10px, var(--stage-safe-bottom, 0px))',
+        paddingLeft: isPc
+          ? 'max(32px, var(--stage-safe-left, 0px))'
+          : 'max(14px, var(--stage-safe-left, 0px))',
+        paddingRight: isPc
+          ? 'max(32px, var(--stage-safe-right, 0px))'
+          : 'max(14px, var(--stage-safe-right, 0px))',
         touchAction: 'manipulation',
       }}
     >
@@ -76,11 +86,13 @@ export const MapSelector = memo(function MapSelector({
 
       {/* Top Header: Back Button + Title + Coin Balance */}
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 px-1">
-        <div className="flex items-center gap-2">
+        <div className={`flex items-center ${isPc ? 'gap-4' : 'gap-2'}`}>
           <button
             type="button"
             onClick={onBack}
-            className="inline-flex items-center gap-1.5 rounded-[8px] px-3 py-1 font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
+            className={`inline-flex items-center gap-2 rounded-[8px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer ${
+              isPc ? 'px-5 py-2.5' : 'px-3 py-1'
+            }`}
             style={{
               backgroundColor: '#3E4182',
               backgroundImage: PURPLE_DOT_PATTERN,
@@ -88,13 +100,15 @@ export const MapSelector = memo(function MapSelector({
               backgroundPosition: '0 0, 5px 5px',
               border: '2.5px solid #0B0D18',
               boxShadow: '2px 3px 0 rgba(8, 10, 18, 0.85)',
-              fontSize: 'clamp(10.5px, 1.5vw, 13px)',
+              fontSize: isPc
+                ? 'clamp(16px, 1.35vw, 19px)'
+                : 'clamp(10.5px, 1.5vw, 13px)',
               textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.9)',
             }}
           >
             <svg
-              width="14"
-              height="14"
+              width={isPc ? '21' : '14'}
+              height={isPc ? '21' : '14'}
               viewBox="0 0 24 24"
               fill="none"
               aria-hidden="true"
@@ -111,7 +125,9 @@ export const MapSelector = memo(function MapSelector({
           </button>
 
           <div
-            className="inline-flex items-center gap-2 rounded-[8px] px-3 py-1"
+            className={`inline-flex items-center gap-2 rounded-[8px] ${
+              isPc ? 'px-5 py-2.5' : 'px-3 py-1'
+            }`}
             style={{
               backgroundColor: '#2B2D5C',
               backgroundImage: PURPLE_DOT_PATTERN,
@@ -124,7 +140,9 @@ export const MapSelector = memo(function MapSelector({
             <span
               className="font-cartoon font-bold italic uppercase tracking-wide text-white"
               style={{
-                fontSize: 'clamp(11px, 1.6vw, 14px)',
+                fontSize: isPc
+                  ? 'clamp(16.5px, 1.45vw, 20px)'
+                  : 'clamp(11px, 1.6vw, 14px)',
                 textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.9)',
               }}
             >
@@ -135,7 +153,9 @@ export const MapSelector = memo(function MapSelector({
 
         <div
           aria-label={`Coins: ${coins}`}
-          className="inline-flex items-center gap-1.5 rounded-full px-3 py-0.5"
+          className={`inline-flex items-center rounded-full ${
+            isPc ? 'gap-2.5 px-5 py-2' : 'gap-1.5 px-3 py-0.5'
+          }`}
           style={{
             backgroundColor: '#252752',
             border: '2px solid #0B0D18',
@@ -143,8 +163,8 @@ export const MapSelector = memo(function MapSelector({
           }}
         >
           <svg
-            width="15"
-            height="15"
+            width={isPc ? '22' : '15'}
+            height={isPc ? '22' : '15'}
             viewBox="0 0 24 24"
             fill="none"
             aria-hidden="true"
@@ -169,7 +189,9 @@ export const MapSelector = memo(function MapSelector({
           <span
             className="font-cartoon font-bold tabular-nums text-white"
             style={{
-              fontSize: 'clamp(11.5px, 1.4vw, 13.5px)',
+              fontSize: isPc
+                ? 'clamp(16.5px, 1.4vw, 20px)'
+                : 'clamp(11.5px, 1.4vw, 13.5px)',
               textShadow: '0 1px 0 rgba(8, 10, 18, 0.85)',
             }}
           >
@@ -181,8 +203,10 @@ export const MapSelector = memo(function MapSelector({
       {/* Two Map Cards Side by Side with 3 Zooming Screenshots Each */}
       <div className="relative z-10 flex flex-1 min-h-0 items-center justify-center py-2">
         <div
-          className="grid w-full grid-cols-2 items-center gap-4 sm:gap-5"
-          style={{ maxWidth: '580px' }}
+          className={`grid w-full grid-cols-2 items-center ${
+            isPc ? 'gap-9' : 'gap-4 sm:gap-5'
+          }`}
+          style={{ maxWidth: isPc ? 'clamp(840px, 72vw, 1140px)' : '580px' }}
         >
           {MAP_REGISTRY.map((map) => {
             const isSelected = map.id === selectedMapId;
@@ -194,7 +218,9 @@ export const MapSelector = memo(function MapSelector({
                   type="button"
                   onClick={() => handleCardSelect(map.id)}
                   aria-pressed={isSelected}
-                  className="group flex w-full flex-col overflow-hidden rounded-[9px] p-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer active:scale-[0.97]"
+                  className={`group flex w-full flex-col overflow-hidden rounded-[9px] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer active:scale-[0.97] ${
+                    isPc ? 'p-4.5' : 'p-2'
+                  }`}
                   style={{
                     backgroundColor: isSelected ? '#2F3369' : '#25274D',
                     backgroundImage: PURPLE_DOT_PATTERN,
@@ -221,7 +247,9 @@ export const MapSelector = memo(function MapSelector({
                     className="relative w-full overflow-hidden rounded-[6px]"
                     style={{
                       aspectRatio: '16 / 9',
-                      maxHeight: 'clamp(96px, 28vh, 148px)',
+                      maxHeight: isPc
+                        ? 'clamp(200px, 38vh, 340px)'
+                        : 'clamp(96px, 28vh, 148px)',
                       border: '2px solid #0B0D18',
                       backgroundColor: '#0B0E18',
                     }}
@@ -246,9 +274,11 @@ export const MapSelector = memo(function MapSelector({
                   </div>
 
                   {/* Map Name Only Below */}
-                  <div className="mt-2 flex items-center justify-center gap-2 pb-0.5">
+                  <div className={`flex items-center justify-center gap-2.5 pb-0.5 ${isPc ? 'mt-3.5' : 'mt-2'}`}>
                     <span
-                      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border border-[#0B0D18] transition-transform duration-300"
+                      className={`inline-block shrink-0 rounded-full border border-[#0B0D18] transition-transform duration-300 ${
+                        isPc ? 'h-4 w-4' : 'h-2.5 w-2.5'
+                      }`}
                       style={{
                         backgroundColor: map.accentColor,
                         transform: isSelected ? 'scale(1.15)' : 'scale(0.9)',
@@ -258,7 +288,9 @@ export const MapSelector = memo(function MapSelector({
                       className="font-cartoon font-bold italic uppercase tracking-wide transition-colors duration-250"
                       style={{
                         color: isSelected ? '#FFD147' : '#FFFFFF',
-                        fontSize: 'clamp(13px, 1.9vw, 16px)',
+                        fontSize: isPc
+                          ? 'clamp(20px, 2vw, 27px)'
+                          : 'clamp(13px, 1.9vw, 16px)',
                         textShadow: '0 1.5px 0 #0B0D18',
                       }}
                     >

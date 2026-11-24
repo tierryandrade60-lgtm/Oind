@@ -44,6 +44,7 @@ import {
   VISION_LASER_DURATION_MS,
 } from '../game/abilityConfig';
 import { AbilityIcon } from './AbilityIcon';
+import { KeybindBadge } from './KeybindBadge';
 
 interface CooldownState {
   startMs: number;
@@ -187,6 +188,7 @@ export interface AbilityBarProps {
   stolenAbility?: StolenAbilitySlotState | null;
   lockedAbilityIds?: ReadonlyArray<AbilityId>;
   flightCancelVisible?: boolean;
+  isPc?: boolean;
   onFlightToggle?: (active: boolean) => boolean;
   onFlightStateChange?: (active: boolean) => void;
   onCastChaosBolt?: () => boolean;
@@ -345,6 +347,7 @@ export const AbilityBar = memo(
       stolenAbility = null,
       lockedAbilityIds,
       flightCancelVisible = false,
+      isPc = false,
       onFlightToggle,
       onFlightStateChange,
       onCastChaosBolt,
@@ -2168,8 +2171,9 @@ export const AbilityBar = memo(
       [onAbilitySound, onFireSupremeStackBolt, onStopSupremeDrainHold, triggerSubtlePulse],
     );
 
-    // Silent keyboard shortcuts: 1..5 for main abilities, Q/E/R for Darkhold sub-abilities while active
+    // Keyboard shortcuts: 1..5 / Numpad1..5 for main abilities, Q/E/R for contextual sub-abilities (PC only)
     useEffect(() => {
+      if (!isPc) return;
       const triggerSlotDown = (slotIdx: number) => {
         const card = effectiveAbilities[slotIdx];
         if (!card) return;
@@ -2187,39 +2191,73 @@ export const AbilityBar = memo(
       };
 
       const onKeyDown = (e: KeyboardEvent) => {
-        if (e.repeat) return;
+        if (
+          e.repeat ||
+          e.target instanceof HTMLInputElement ||
+          e.target instanceof HTMLTextAreaElement
+        ) {
+          return;
+        }
         switch (e.code) {
           case 'Digit1':
+          case 'Numpad1':
             triggerSlotDown(0);
             break;
           case 'Digit2':
+          case 'Numpad2':
             triggerSlotDown(1);
             break;
           case 'Digit3':
+          case 'Numpad3':
             triggerSlotDown(2);
             break;
           case 'Digit4':
+          case 'Numpad4':
             triggerSlotDown(3);
             break;
           case 'Digit5':
+          case 'Numpad5':
             triggerSlotDown(4);
             break;
           case 'KeyQ':
-            if (showDarkholdSubBar && DARKHOLD_SUB_ABILITIES[0]) {
+            if (mindControlPhase === 'choosing') {
+              onSelectMindControlOption?.('mc-paralysis');
+              onAbilitySound?.('mind-control-select');
+            } else if (forcefieldTransferPhase === 'choosing') {
+              onSelectForcefieldOption?.('protection');
+              onAbilitySound?.('forcefield-protection');
+            } else if (
+              forcefieldShieldActive &&
+              forcefieldTransferPhase === 'idle' &&
+              !locked &&
+              transferCdRef.current === null
+            ) {
+              const ok = onTransferForcefieldShield ? onTransferForcefieldShield() : true;
+              if (ok) onAbilitySound?.('forcefield-transfer');
+            } else if (showDarkholdSubBar && DARKHOLD_SUB_ABILITIES[0]) {
               activateAbility(DARKHOLD_SUB_ABILITIES[0].id);
             } else if (showAgathaDarkholdSubBar && AGATHA_DARKHOLD_SUB_ABILITIES[0]) {
               activateAbility(AGATHA_DARKHOLD_SUB_ABILITIES[0].id);
             }
             break;
           case 'KeyE':
-            if (showDarkholdSubBar && DARKHOLD_SUB_ABILITIES[1]) {
+            if (mindControlPhase === 'choosing') {
+              onSelectMindControlOption?.('mc-sleep');
+              onAbilitySound?.('mind-control-select');
+            } else if (forcefieldTransferPhase === 'choosing') {
+              onSelectForcefieldOption?.('suffocation');
+              onAbilitySound?.('forcefield-suffocation');
+            } else if (showDarkholdSubBar && DARKHOLD_SUB_ABILITIES[1]) {
               activateAbility(DARKHOLD_SUB_ABILITIES[1].id);
             } else if (showAgathaDarkholdSubBar && AGATHA_DARKHOLD_SUB_ABILITIES[1]) {
               activateAbility(AGATHA_DARKHOLD_SUB_ABILITIES[1].id);
             }
             break;
           case 'KeyR':
-            if (showDarkholdSubBar && DARKHOLD_SUB_ABILITIES[2]) {
+            if (mindControlPhase === 'choosing') {
+              onSelectMindControlOption?.('mc-mental-damage');
+              onAbilitySound?.('mind-control-select');
+            } else if (showDarkholdSubBar && DARKHOLD_SUB_ABILITIES[2]) {
               activateAbility(DARKHOLD_SUB_ABILITIES[2].id);
             } else if (showAgathaDarkholdSubBar && AGATHA_DARKHOLD_SUB_ABILITIES[2]) {
               activateAbility(AGATHA_DARKHOLD_SUB_ABILITIES[2].id);
@@ -2230,18 +2268,23 @@ export const AbilityBar = memo(
       const onKeyUp = (e: KeyboardEvent) => {
         switch (e.code) {
           case 'Digit1':
+          case 'Numpad1':
             triggerSlotUp(0);
             break;
           case 'Digit2':
+          case 'Numpad2':
             triggerSlotUp(1);
             break;
           case 'Digit3':
+          case 'Numpad3':
             triggerSlotUp(2);
             break;
           case 'Digit4':
+          case 'Numpad4':
             triggerSlotUp(3);
             break;
           case 'Digit5':
+          case 'Numpad5':
             triggerSlotUp(4);
             break;
         }
@@ -2259,9 +2302,27 @@ export const AbilityBar = memo(
       endChaosDrainPress,
       showAgathaDarkholdSubBar,
       showDarkholdSubBar,
+      mindControlPhase,
+      onSelectMindControlOption,
+      forcefieldShieldActive,
+      forcefieldTransferPhase,
+      locked,
+      onTransferForcefieldShield,
+      onSelectForcefieldOption,
+      onAbilitySound,
+      isPc,
     ]);
 
     const isFiveSlots = effectiveAbilities.length >= 5;
+    const subKeyLabels = ['Q', 'E', 'R'] as const;
+    const pcRightAnchor =
+      'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px))';
+    const pcSubRightAnchor = flightCancelVisible
+      ? 'calc(var(--pc-edge-r, 28px) + var(--pc-sprint, 90px) + var(--pc-gap, 14px) + var(--pc-sub, 82px) + var(--pc-sub-gap, 12px))'
+      : pcRightAnchor;
+    const pcBottomBar = 'var(--pc-edge-b, 28px)';
+    const pcSubBottom =
+      'calc(var(--pc-edge-b, 28px) + var(--pc-slot, 94px) + var(--pc-row-gap, 18px))';
 
     return (
       <>
@@ -2270,12 +2331,15 @@ export const AbilityBar = memo(
           <div
             className="animate-cartoon-pop-in fixed z-20 flex items-center select-none"
             style={{
-              right: flightCancelVisible
-                ? 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px) + clamp(54px, 8.4vw, 66px) + 10px)'
-                : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-              bottom:
-                'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
-              gap: 'clamp(6px, 1.0vw, 8px)',
+              right: isPc
+                ? pcSubRightAnchor
+                : flightCancelVisible
+                  ? 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px) + clamp(54px, 8.4vw, 66px) + 10px)'
+                  : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+              bottom: isPc
+                ? pcSubBottom
+                : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+              gap: isPc ? 'var(--pc-sub-gap, 12px)' : 'clamp(6px, 1.0vw, 8px)',
               touchAction: 'manipulation',
               transition: 'right 140ms cubic-bezier(0.16, 1, 0.3, 1)',
             }}
@@ -2284,7 +2348,7 @@ export const AbilityBar = memo(
             onPointerUp={(e) => e.stopPropagation()}
             onPointerCancel={(e) => e.stopPropagation()}
           >
-            {DARKHOLD_SUB_ABILITIES.map((sub) => {
+            {DARKHOLD_SUB_ABILITIES.map((sub, subIdx) => {
               const cd = cooldowns[sub.id];
               const isOnCd = cd !== undefined;
               const isShieldOn = sub.id === 'auto-shield' && autoShieldActive;
@@ -2305,12 +2369,14 @@ export const AbilityBar = memo(
                     transition: 'opacity 120ms ease',
                   }}
                 >
+                  {isPc && <KeybindBadge label={subKeyLabels[subIdx] ?? ''} />}
                   <button
                     type="button"
                     disabled={isDisabled}
                     onPointerDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      if (isPc) e.currentTarget.blur();
                       activateAbility(sub.id);
                     }}
                     onKeyDown={(e) => {
@@ -2324,9 +2390,9 @@ export const AbilityBar = memo(
                     aria-label={sub.name}
                     className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                     style={{
-                      width: 'clamp(46px, 7.2vw, 56px)',
-                      height: 'clamp(46px, 7.2vw, 56px)',
-                      padding: '3px',
+                      width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(46px, 7.2vw, 56px)',
+                      height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(46px, 7.2vw, 56px)',
+                      padding: isPc ? '5px' : '3px',
                       backgroundColor: bg,
                       backgroundImage: DARKHOLD_DOT_PATTERN,
                       backgroundSize: '10px 10px',
@@ -2344,14 +2410,17 @@ export const AbilityBar = memo(
                     }}
                   >
                     <span className="relative z-10 flex items-center justify-center">
-                      <AbilityIcon id={sub.id} size={18} />
+                      <AbilityIcon id={sub.id} size={isPc ? 30 : 18} />
                     </span>
 
                     <span
                       className="relative z-10 font-cartoon font-bold italic uppercase text-center leading-[0.95]"
                       style={{
-                        fontSize:
-                          sub.name.length > 9
+                        fontSize: isPc
+                          ? sub.name.length > 9
+                            ? '10.5px'
+                            : '11.8px'
+                          : sub.name.length > 9
                             ? 'clamp(6.2px, 0.88vw, 7.4px)'
                             : 'clamp(7px, 0.96vw, 8.4px)',
                         color: isShieldOn ? 'rgba(255, 224, 232, 0.98)' : '#FFFFFF',
@@ -2408,12 +2477,15 @@ export const AbilityBar = memo(
           <div
             className="animate-cartoon-pop-in fixed z-20 flex items-center select-none"
             style={{
-              right: flightCancelVisible
-                ? 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px) + clamp(54px, 8.4vw, 66px) + 10px)'
-                : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-              bottom:
-                'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
-              gap: 'clamp(6px, 1.0vw, 8px)',
+              right: isPc
+                ? pcSubRightAnchor
+                : flightCancelVisible
+                  ? 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px) + clamp(54px, 8.4vw, 66px) + 10px)'
+                  : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+              bottom: isPc
+                ? pcSubBottom
+                : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 12px)',
+              gap: isPc ? 'var(--pc-sub-gap, 12px)' : 'clamp(6px, 1.0vw, 8px)',
               touchAction: 'manipulation',
               transition: 'right 140ms cubic-bezier(0.16, 1, 0.3, 1)',
             }}
@@ -2422,7 +2494,7 @@ export const AbilityBar = memo(
             onPointerUp={(e) => e.stopPropagation()}
             onPointerCancel={(e) => e.stopPropagation()}
           >
-            {AGATHA_DARKHOLD_SUB_ABILITIES.map((sub) => {
+            {AGATHA_DARKHOLD_SUB_ABILITIES.map((sub, subIdx) => {
               const cd = cooldowns[sub.id];
               const isOnCd = cd !== undefined;
               const isShieldOn = sub.id === 'agatha-auto-shield' && agathaAutoShieldActive;
@@ -2443,12 +2515,14 @@ export const AbilityBar = memo(
                     transition: 'opacity 120ms ease',
                   }}
                 >
+                  {isPc && <KeybindBadge label={subKeyLabels[subIdx] ?? ''} />}
                   <button
                     type="button"
                     disabled={isDisabled}
                     onPointerDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      if (isPc) e.currentTarget.blur();
                       activateAbility(sub.id);
                     }}
                     onKeyDown={(e) => {
@@ -2462,9 +2536,9 @@ export const AbilityBar = memo(
                     aria-label={sub.name}
                     className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                     style={{
-                      width: 'clamp(46px, 7.2vw, 56px)',
-                      height: 'clamp(46px, 7.2vw, 56px)',
-                      padding: '3px',
+                      width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(46px, 7.2vw, 56px)',
+                      height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(46px, 7.2vw, 56px)',
+                      padding: isPc ? '5px' : '3px',
                       backgroundColor: bg,
                       backgroundImage: AGATHA_DARKHOLD_DOT_PATTERN,
                       backgroundSize: '10px 10px',
@@ -2482,14 +2556,17 @@ export const AbilityBar = memo(
                     }}
                   >
                     <span className="relative z-10 flex items-center justify-center">
-                      <AbilityIcon id={sub.id} size={18} />
+                      <AbilityIcon id={sub.id} size={isPc ? 30 : 18} />
                     </span>
 
                     <span
                       className="relative z-10 font-cartoon font-bold italic uppercase text-center leading-[0.95]"
                       style={{
-                        fontSize:
-                          sub.name.length > 9
+                        fontSize: isPc
+                          ? sub.name.length > 9
+                            ? '10.5px'
+                            : '11.8px'
+                          : sub.name.length > 9
                             ? 'clamp(6.2px, 0.88vw, 7.4px)'
                             : 'clamp(7px, 0.96vw, 8.4px)',
                         color: isShieldOn ? 'rgba(243, 232, 255, 0.98)' : '#FFFFFF',
@@ -2544,11 +2621,13 @@ export const AbilityBar = memo(
           <div
             className="animate-cartoon-pop-in fixed z-30 flex items-center select-none"
             style={{
-              right:
-                'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-              bottom:
-                'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 14px)',
-              gap: 'clamp(6px, 1.0vw, 9px)',
+              right: isPc
+                ? pcRightAnchor
+                : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+              bottom: isPc
+                ? pcSubBottom
+                : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 14px)',
+              gap: isPc ? 'var(--pc-sub-gap, 12px)' : 'clamp(6px, 1.0vw, 9px)',
               touchAction: 'manipulation',
             }}
             onPointerDown={(e) => e.stopPropagation()}
@@ -2556,17 +2635,19 @@ export const AbilityBar = memo(
             onPointerUp={(e) => e.stopPropagation()}
             onPointerCancel={(e) => e.stopPropagation()}
           >
-            {EMMA_MIND_CONTROL_OPTIONS.map((opt) => (
+            {EMMA_MIND_CONTROL_OPTIONS.map((opt, optIdx) => (
               <div
                 key={opt.id}
                 className="relative"
                 style={{ transform: `rotate(${opt.tiltDeg}deg)` }}
               >
+                {isPc && <KeybindBadge label={subKeyLabels[optIdx] ?? ''} />}
                 <button
                   type="button"
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (isPc) e.currentTarget.blur();
                     onSelectMindControlOption?.(
                       opt.id as 'mc-paralysis' | 'mc-sleep' | 'mc-mental-damage',
                     );
@@ -2585,9 +2666,9 @@ export const AbilityBar = memo(
                   aria-label={opt.name}
                   className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                   style={{
-                    width: 'clamp(48px, 7.5vw, 58px)',
-                    height: 'clamp(48px, 7.5vw, 58px)',
-                    padding: '3px',
+                    width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(48px, 7.5vw, 58px)',
+                    height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(48px, 7.5vw, 58px)',
+                    padding: isPc ? '5px' : '3px',
                     backgroundColor: '#1E2C4F',
                     backgroundImage: PURPLE_DOT_PATTERN,
                     backgroundSize: '10px 10px',
@@ -2601,12 +2682,12 @@ export const AbilityBar = memo(
                   }}
                 >
                   <span className="relative z-10 flex items-center justify-center">
-                    <AbilityIcon id={opt.id} size={18} />
+                    <AbilityIcon id={opt.id} size={isPc ? 30 : 18} />
                   </span>
                   <span
                     className="relative z-10 font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
                     style={{
-                      fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
+                      fontSize: isPc ? '11.2px' : 'clamp(6.4px, 0.9vw, 7.8px)',
                       textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.94)',
                     }}
                   >
@@ -2623,10 +2704,12 @@ export const AbilityBar = memo(
           <div
             className="animate-cartoon-pop-in fixed z-30 flex items-center select-none"
             style={{
-              right:
-                'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-              bottom:
-                'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 14px)',
+              right: isPc
+                ? pcRightAnchor
+                : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+              bottom: isPc
+                ? pcSubBottom
+                : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 14px)',
               touchAction: 'manipulation',
             }}
             onPointerDown={(e) => e.stopPropagation()}
@@ -2634,13 +2717,15 @@ export const AbilityBar = memo(
             onPointerUp={(e) => e.stopPropagation()}
             onPointerCancel={(e) => e.stopPropagation()}
           >
-            <div style={{ transform: `rotate(${FORCEFIELD_TRANSFER_ABILITY.tiltDeg}deg)` }}>
+            <div className="relative" style={{ transform: `rotate(${FORCEFIELD_TRANSFER_ABILITY.tiltDeg}deg)` }}>
+              {isPc && <KeybindBadge label="Q" />}
               <button
                 type="button"
                 disabled={transferCd !== null}
                 onPointerDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  if (isPc) e.currentTarget.blur();
                   if (transferCd !== null) return;
                   const ok = onTransferForcefieldShield ? onTransferForcefieldShield() : true;
                   if (ok) {
@@ -2661,9 +2746,9 @@ export const AbilityBar = memo(
                 aria-label={FORCEFIELD_TRANSFER_ABILITY.name}
                 className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 style={{
-                  width: 'clamp(50px, 7.8vw, 60px)',
-                  height: 'clamp(48px, 7.4vw, 56px)',
-                  padding: '3px',
+                  width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(50px, 7.8vw, 60px)',
+                  height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(48px, 7.4vw, 56px)',
+                  padding: isPc ? '5px' : '3px',
                   backgroundColor: '#19355C',
                   backgroundImage: PURPLE_DOT_PATTERN,
                   backgroundSize: '10px 10px',
@@ -2677,12 +2762,12 @@ export const AbilityBar = memo(
                 }}
               >
                 <span className="relative z-10 flex items-center justify-center">
-                  <AbilityIcon id={FORCEFIELD_TRANSFER_ABILITY.id} size={18} />
+                  <AbilityIcon id={FORCEFIELD_TRANSFER_ABILITY.id} size={isPc ? 30 : 18} />
                 </span>
                 <span
                   className="relative z-10 font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
                   style={{
-                    fontSize: 'clamp(6.4px, 0.9vw, 7.8px)',
+                    fontSize: isPc ? '11.2px' : 'clamp(6.4px, 0.9vw, 7.8px)',
                     textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.94)',
                   }}
                 >
@@ -2715,11 +2800,13 @@ export const AbilityBar = memo(
           <div
             className="animate-cartoon-pop-in fixed z-30 flex items-center select-none"
             style={{
-              right:
-                'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-              bottom:
-                'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 14px)',
-              gap: 'clamp(6px, 1.0vw, 9px)',
+              right: isPc
+                ? pcRightAnchor
+                : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+              bottom: isPc
+                ? pcSubBottom
+                : 'calc(max(20px, calc(var(--stage-safe-bottom, 0px) + 14px)) + clamp(50px, 7.8vw, 62px) + 14px)',
+              gap: isPc ? 'var(--pc-sub-gap, 12px)' : 'clamp(6px, 1.0vw, 9px)',
               touchAction: 'manipulation',
             }}
             onPointerDown={(e) => e.stopPropagation()}
@@ -2727,17 +2814,19 @@ export const AbilityBar = memo(
             onPointerUp={(e) => e.stopPropagation()}
             onPointerCancel={(e) => e.stopPropagation()}
           >
-            {FORCEFIELD_EFFECT_OPTIONS.map((opt) => (
+            {FORCEFIELD_EFFECT_OPTIONS.map((opt, optIdx) => (
               <div
                 key={opt.id}
                 className="relative"
                 style={{ transform: `rotate(${opt.tiltDeg}deg)` }}
               >
+                {isPc && <KeybindBadge label={optIdx === 0 ? 'Q' : 'E'} />}
                 <button
                   type="button"
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (isPc) e.currentTarget.blur();
                     const mode =
                       opt.id === 'forcefield-protection' ? 'protection' : 'suffocation';
                     onSelectForcefieldOption?.(mode);
@@ -2764,9 +2853,9 @@ export const AbilityBar = memo(
                   aria-label={opt.name}
                   className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                   style={{
-                    width: 'clamp(52px, 8.0vw, 62px)',
-                    height: 'clamp(48px, 7.5vw, 58px)',
-                    padding: '3px',
+                    width: isPc ? 'var(--pc-sub, 82px)' : 'clamp(52px, 8.0vw, 62px)',
+                    height: isPc ? 'var(--pc-sub, 82px)' : 'clamp(48px, 7.5vw, 58px)',
+                    padding: isPc ? '5px' : '3px',
                     backgroundColor:
                       opt.id === 'forcefield-protection' ? '#163B4D' : '#2E1E4A',
                     backgroundImage: PURPLE_DOT_PATTERN,
@@ -2784,12 +2873,12 @@ export const AbilityBar = memo(
                   }}
                 >
                   <span className="relative z-10 flex items-center justify-center">
-                    <AbilityIcon id={opt.id} size={18} />
+                    <AbilityIcon id={opt.id} size={isPc ? 30 : 18} />
                   </span>
                   <span
                     className="relative z-10 font-cartoon font-bold italic uppercase text-center leading-[0.95] text-white"
                     style={{
-                      fontSize: 'clamp(6.0px, 0.86vw, 7.4px)',
+                      fontSize: isPc ? '10.8px' : 'clamp(6.0px, 0.86vw, 7.4px)',
                       textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.94)',
                     }}
                   >
@@ -2805,12 +2894,19 @@ export const AbilityBar = memo(
         <div
           className="fixed z-20 flex items-center select-none"
           style={{
-            right:
-              'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
-            bottom: 'max(20px, calc(var(--stage-safe-bottom, 0px) + 14px))',
-            gap: isFiveSlots
-              ? 'clamp(4px, 0.85vw, 7px)'
-              : 'clamp(6px, 1.1vw, 9px)',
+            right: isPc
+              ? pcRightAnchor
+              : 'calc(max(18px, var(--stage-safe-right, 0px) + 12px) + clamp(54px, 8.4vw, 66px) + clamp(10px, 1.8vw, 16px))',
+            bottom: isPc
+              ? pcBottomBar
+              : 'max(20px, calc(var(--stage-safe-bottom, 0px) + 14px))',
+            gap: isPc
+              ? isFiveSlots
+                ? 'clamp(10px, 0.8vw, 14px)'
+                : 'clamp(12px, 0.95vw, 16px)'
+              : isFiveSlots
+                ? 'clamp(4px, 0.85vw, 7px)'
+                : 'clamp(6px, 1.1vw, 9px)',
             touchAction: 'manipulation',
           }}
           onPointerDown={(e) => e.stopPropagation()}
@@ -2970,17 +3066,22 @@ export const AbilityBar = memo(
                   transition: 'opacity 120ms ease',
                 }}
               >
+                {/* PC-Only Numerical Shortcut Badge */}
+                {isPc && !isStolenPlaceholder && (
+                  <KeybindBadge label={`${slotIdx + 1}`} />
+                )}
+
                 {/* Synchronized Red Circular Stack Counter */}
                 {(card.maxCharges !== undefined || card.id === 'chaos-drain') && (
                   <div
                     key={card.id === 'chaos-drain' ? supremeStacks : chargeAnimKey}
                     className="pointer-events-none absolute z-30 flex items-center justify-center rounded-full font-cartoon font-bold italic text-white animate-charge-pop"
                     style={{
-                      top: '-9px',
-                      right: '-7px',
-                      width: '21px',
-                      height: '21px',
-                      fontSize: '12px',
+                      top: isPc ? '-10px' : '-9px',
+                      right: isPc ? '-8px' : '-7px',
+                      width: isPc ? '28px' : '21px',
+                      height: isPc ? '28px' : '21px',
+                      fontSize: isPc ? '15px' : '12px',
                       lineHeight: 1,
                       backgroundColor:
                         (card.id === 'chaos-drain' ? supremeStacks : charges) === 0
@@ -3001,6 +3102,7 @@ export const AbilityBar = memo(
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (isPc) e.currentTarget.blur();
                     if (card.id === 'chaos-drain') {
                       e.currentTarget.setPointerCapture(e.pointerId);
                       beginChaosDrainPress(e.pointerId);
@@ -3073,13 +3175,21 @@ export const AbilityBar = memo(
                   aria-label={card.name}
                   className="relative flex flex-col items-center justify-center gap-[2px] overflow-hidden rounded-[3px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                   style={{
-                    width: isFiveSlots
-                      ? 'clamp(44px, 6.8vw, 55px)'
-                      : 'clamp(50px, 7.8vw, 62px)',
-                    height: isFiveSlots
-                      ? 'clamp(44px, 6.8vw, 55px)'
-                      : 'clamp(50px, 7.8vw, 62px)',
-                    padding: '3px',
+                    width: isPc
+                      ? isFiveSlots
+                        ? 'var(--pc-slot-5, 82px)'
+                        : 'var(--pc-slot, 94px)'
+                      : isFiveSlots
+                        ? 'clamp(44px, 6.8vw, 55px)'
+                        : 'clamp(50px, 7.8vw, 62px)',
+                    height: isPc
+                      ? isFiveSlots
+                        ? 'var(--pc-slot-5, 82px)'
+                        : 'var(--pc-slot, 94px)'
+                      : isFiveSlots
+                        ? 'clamp(44px, 6.8vw, 55px)'
+                        : 'clamp(50px, 7.8vw, 62px)',
+                    padding: isPc ? '5px' : '3px',
                     backgroundColor: baseBg,
                     backgroundImage:
                       isDarkholdSelected || isSupremeDrainSelected || isZombieBeamSelected
@@ -3143,7 +3253,19 @@ export const AbilityBar = memo(
                   <span className="relative z-10 flex items-center justify-center">
                     <AbilityIcon
                       id={card.id}
-                      size={isStolenPlaceholder ? 26 : isFiveSlots ? 18 : 20}
+                      size={
+                        isPc
+                          ? isStolenPlaceholder
+                            ? 42
+                            : isFiveSlots
+                              ? 30
+                              : 35
+                          : isStolenPlaceholder
+                            ? 26
+                            : isFiveSlots
+                              ? 18
+                              : 20
+                      }
                       variant={quicksilverVariant}
                     />
                   </span>
@@ -3152,13 +3274,21 @@ export const AbilityBar = memo(
                     <span
                       className="relative z-10 font-cartoon font-bold italic uppercase text-center leading-[0.95]"
                       style={{
-                        fontSize: isFiveSlots
-                          ? card.name.length > 9
-                            ? 'clamp(5.6px, 0.82vw, 6.8px)'
-                            : 'clamp(6.6px, 0.92vw, 7.8px)'
-                          : card.name.length > 10
-                            ? 'clamp(6.4px, 0.92vw, 7.8px)'
-                            : 'clamp(7.5px, 1.05vw, 9px)',
+                        fontSize: isPc
+                          ? isFiveSlots
+                            ? card.name.length > 9
+                              ? '10.2px'
+                              : '11.4px'
+                            : card.name.length > 10
+                              ? '11.4px'
+                              : '12.8px'
+                          : isFiveSlots
+                            ? card.name.length > 9
+                              ? 'clamp(5.6px, 0.82vw, 6.8px)'
+                              : 'clamp(6.6px, 0.92vw, 7.8px)'
+                            : card.name.length > 10
+                              ? 'clamp(6.4px, 0.92vw, 7.8px)'
+                              : 'clamp(7.5px, 1.05vw, 9px)',
                         color: isToggleSelected ? 'rgba(255, 224, 232, 0.96)' : '#FFFFFF',
                         textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.94)',
                       }}

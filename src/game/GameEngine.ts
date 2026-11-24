@@ -321,6 +321,7 @@ export interface EngineCallbacks {
   onSpawnLockChange?: (locked: boolean) => void;
   onPlayerTelemetryUpdate?: (telemetry: PlayerCombatTelemetry) => void;
   onMultiKill?: (event: MultiKillEvent) => void;
+  onReticleScreenUpdate?: (screenX: number, screenY: number, assistActive: boolean) => void;
 }
 
 function detectSoftwareWebGL(): boolean {
@@ -1124,6 +1125,13 @@ export class GameEngine {
   private readonly _ragdollFocus = new THREE.Vector3();
   private readonly _raycaster = new THREE.Raycaster();
   private readonly _reticleNdc = new THREE.Vector2();
+  private readonly _pcTargetNdc = new THREE.Vector2();
+  private readonly _pcSmoothNdc = new THREE.Vector2();
+  private readonly _pcAssistNdc = new THREE.Vector2();
+  private readonly _pcProjVec = new THREE.Vector3();
+  private pcAimEnabled = false;
+  private pcAimHasCursor = false;
+  private pcAimAssisting = false;
   private readonly _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly _aimTarget = new THREE.Vector3();
   private readonly _handWorld = new THREE.Vector3();
@@ -1196,8 +1204,6 @@ export class GameEngine {
   private flightRegenDelayTimer = 0;
   private lastReportedFlightEnergy = 100;
   private spawnProtectionTimer = 0;
-  private deathAnimElapsed = 0;
-  private readonly deathOrbAnchor = new THREE.Vector3();
   private sprintDustTimer = 0;
   private sprintDustSideSign: 1 | -1 = 1;
   private readonly blueOrbVfx: BlueOrbTransitionVfx;
@@ -1206,6 +1212,7 @@ export class GameEngine {
   private readonly resizeObserver: ResizeObserver | null = null;
   private readonly handleKeyDownBound: (e: KeyboardEvent) => void;
   private readonly handleKeyUpBound: (e: KeyboardEvent) => void;
+  private readonly handleBlurBound: () => void;
   private readonly handleContextLostBound: (e: Event) => void;
   private readonly handleContextRestoredBound: () => void;
 
@@ -1498,6 +1505,7 @@ export class GameEngine {
     this.handleResizeBound = this.onResize.bind(this);
     this.handleKeyDownBound = this.onKeyDown.bind(this);
     this.handleKeyUpBound = this.onKeyUp.bind(this);
+    this.handleBlurBound = this.clearHeldInputs.bind(this);
     this.handleContextLostBound = (e: Event) => {
       e.preventDefault();
       this.contextLost = true;
@@ -1517,6 +1525,7 @@ export class GameEngine {
     }
     window.addEventListener('keydown', this.handleKeyDownBound);
     window.addEventListener('keyup', this.handleKeyUpBound);
+    window.addEventListener('blur', this.handleBlurBound);
     this.renderer.domElement.addEventListener(
       'webglcontextlost',
       this.handleContextLostBound,
@@ -3244,9 +3253,116 @@ export class GameEngine {
     return true;
   }
 
+  private getDefaultReticleNdc(out: THREE.Vector2): THREE.Vector2 {
+    return out.set((18 * 2) / this.viewportWidth, (22 * 2) / this.viewportHeight);
+  }
+
+  public setPcAimEnabled(enabled: boolean): void {
+    this.pcAimEnabled = enabled;
+    if (!enabled) {
+      this.pcAimHasCursor = false;
+      this.pcAimAssisting = false;
+      this.clearHeldInputs();
+      this.getDefaultReticleNdc(this._pcTargetNdc);
+      this._pcSmoothNdc.copy(this._pcTargetNdc);
+      this._pcAssistNdc.copy(this._pcTargetNdc);
+    } else if (!this.pcAimHasCursor) {
+      this.getDefaultReticleNdc(this._pcTargetNdc);
+      this._pcSmoothNdc.copy(this._pcTargetNdc);
+      this._pcAssistNdc.copy(this._pcTargetNdc);
+    }
+  }
+
+  public setPcCursorNdc(nx: number, ny: number): void {
+    this._pcTargetNdc.set(
+      THREE.MathUtils.clamp(nx, -0.97, 0.97),
+      THREE.MathUtils.clamp(ny, -0.97, 0.97),
+    );
+    if (!this.pcAimHasCursor) {
+      this._pcSmoothNdc.copy(this._pcTargetNdc);
+      this._pcAssistNdc.copy(this._pcTargetNdc);
+      this.pcAimHasCursor = true;
+    }
+  }
+
+  public clearHeldInputs(): void {
+    this.keyForward = 0;
+    this.keyRight = 0;
+    this.jumpHeld = false;
+    this.isDescendPressed = false;
+  }
+
+  private updatePcReticleAndAssist(_dt: number): void {
+    if (!this.pcAimEnabled) return;
+    if (!this.pcAimHasCursor) {
+      this.getDefaultReticleNdc(this._pcTargetNdc);
+    }
+    this._pcSmoothNdc.copy(this._pcTargetNdc);
+    this._pcAssistNdc.copy(this._pcSmoothNdc);
+    let assisted = false;
+
+    if (!this.dead && this.controlsEnabled && !this.isSpawnLocked()) {
+      this.camera.updateMatrixWorld();
+      const probes = this.getAllTargetProbes();
+      const assistCone = 0.145;
+      let bestScore = Infinity;
+      let bestTx = 0;
+      let bestTy = 0;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < probes.length; i++) {
+        const trg = probes[i];
+        const distSq = trg.position.distanceToSquared(this.physics.position);
+        if (distSq > 40 * 40) continue;
+        this._pcProjVec.set(
+          trg.position.x,
+          trg.position.y + trg.height * 0.56,
+          trg.position.z,
+        );
+        this._pcProjVec.project(this.camera);
+        if (this._pcProjVec.z < -1 || this._pcProjVec.z > 1) continue;
+        const dx = this._pcProjVec.x - this._pcSmoothNdc.x;
+        const dy = this._pcProjVec.y - this._pcSmoothNdc.y;
+        const ndcDist = Math.hypot(dx, dy);
+        if (ndcDist <= assistCone) {
+          const score = ndcDist + Math.sqrt(distSq) * 0.002;
+          if (score < bestScore) {
+            bestScore = score;
+            bestTx = this._pcProjVec.x;
+            bestTy = this._pcProjVec.y;
+            bestDist = ndcDist;
+          }
+        }
+      }
+
+      if (bestDist < Infinity) {
+        // Gentle magnetic pull near enemy torso without stealing player cursor control
+        const strength = Math.pow(1 - bestDist / assistCone, 0.85) * 0.52;
+        this._pcAssistNdc.x = THREE.MathUtils.lerp(
+          this._pcSmoothNdc.x,
+          bestTx,
+          strength,
+        );
+        this._pcAssistNdc.y = THREE.MathUtils.lerp(
+          this._pcSmoothNdc.y,
+          bestTy,
+          strength,
+        );
+        assisted = true;
+      }
+    }
+
+    this.pcAimAssisting = assisted;
+    const sx = (this._pcAssistNdc.x * 0.5 + 0.5) * this.viewportWidth;
+    const sy = (-this._pcAssistNdc.y * 0.5 + 0.5) * this.viewportHeight;
+    this.callbacks.onReticleScreenUpdate?.(sx, sy, assisted);
+  }
+
   private getReticleNdc(): THREE.Vector2 {
-    this._reticleNdc.set((18 * 2) / this.viewportWidth, (22 * 2) / this.viewportHeight);
-    return this._reticleNdc;
+    if (this.pcAimEnabled && this.pcAimHasCursor) {
+      return this._reticleNdc.copy(this._pcAssistNdc);
+    }
+    return this.getDefaultReticleNdc(this._reticleNdc);
   }
 
   private computeReticleAimPoint(
@@ -7489,20 +7605,16 @@ export class GameEngine {
     this.multiKillCount = 0;
     this.multiKillWindowTimer = 0;
     this.clearCharacterAbilityStates(true);
-    this.deathAnimElapsed = 0;
-    this.deathOrbAnchor.copy(this.physics.position);
-    this.physics.velocity.set(0, 0, 0);
+    this.blueOrbVfx.hide();
     this.rig.root.visible = true;
     this.rig.root.scale.setScalar(1);
     this.rig.setOpacity(1);
-    this.blueOrbVfx.update(
-      'death',
-      0,
-      0.016,
-      this.deathOrbAnchor.x,
-      this.deathOrbAnchor.y,
-      this.deathOrbAnchor.z,
+    this.ragdoll.trigger(
+      this.physics.position,
+      this.physics.velocity,
+      this.rig.root.rotation.y,
     );
+    this.physics.velocity.set(0, 0, 0);
     this.fx.triggerCue('death', this.physics.position);
 
     this.playerHp = 0;
@@ -7534,7 +7646,6 @@ export class GameEngine {
     this.rig.setOpacity(1);
 
     this.dead = false;
-    this.deathAnimElapsed = 0;
     this.spawnProtectionTimer = 0;
     this.flightEnabled = false;
     this.invulnerable = false;
@@ -7660,8 +7771,8 @@ export class GameEngine {
   public rotateCamera(deltaYaw: number, deltaPitch: number): void {
     if (!this.controlsEnabled) return;
     this.cameraYaw -= deltaYaw;
-    const minPitch = this.phoenixDiveState.phase !== 'idle' ? -0.38 : -0.12;
-    const maxPitch = this.phoenixDiveState.phase !== 'idle' ? 1.28 : 0.72;
+    const minPitch = this.phoenixDiveState.phase !== 'idle' ? -0.48 : -0.45;
+    const maxPitch = this.phoenixDiveState.phase !== 'idle' ? 1.28 : 1.12;
     this.cameraPitch = THREE.MathUtils.clamp(
       this.cameraPitch + deltaPitch,
       minPitch,
@@ -7672,21 +7783,21 @@ export class GameEngine {
   public zoomCameraByScale(scaleRatio: number): void {
     this.targetCameraDistance = THREE.MathUtils.clamp(
       this.targetCameraDistance * scaleRatio,
-      2.4,
-      9.5,
+      2.2,
+      10.5,
     );
   }
 
   public zoomCameraByDelta(delta: number): void {
     this.targetCameraDistance = THREE.MathUtils.clamp(
       this.targetCameraDistance + delta,
-      2.4,
-      9.5,
+      2.2,
+      10.5,
     );
   }
 
   public setCameraZoomDistance(distance: number): void {
-    this.targetCameraDistance = THREE.MathUtils.clamp(distance, 2.4, 9.5);
+    this.targetCameraDistance = THREE.MathUtils.clamp(distance, 2.2, 10.5);
   }
 
   private computePixelRatio(resolution: ResolutionScale): number {
@@ -7776,6 +7887,13 @@ export class GameEngine {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
+    if (!this.pcAimEnabled) return;
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
     if (!this.controlsEnabled || this.dead || this.isSpawnLocked()) return;
     switch (e.code) {
       case 'KeyW':
@@ -7795,13 +7913,13 @@ export class GameEngine {
         this.keyRight = -1;
         break;
       case 'Space':
+        e.preventDefault();
         this.jumpHeld = true;
         if (!e.repeat) this.triggerJump();
         break;
       case 'KeyC':
-      case 'ShiftLeft':
-      case 'ShiftRight':
       case 'ControlLeft':
+      case 'ShiftRight':
       case 'ControlRight':
         this.isDescendPressed = true;
         break;
@@ -7809,6 +7927,7 @@ export class GameEngine {
   }
 
   private onKeyUp(e: KeyboardEvent): void {
+    if (!this.pcAimEnabled) return;
     switch (e.code) {
       case 'KeyW':
       case 'ArrowUp':
@@ -7830,9 +7949,8 @@ export class GameEngine {
         this.jumpHeld = false;
         break;
       case 'KeyC':
-      case 'ShiftLeft':
-      case 'ShiftRight':
       case 'ControlLeft':
+      case 'ShiftRight':
       case 'ControlRight':
         this.isDescendPressed = false;
         break;
@@ -8081,43 +8199,9 @@ export class GameEngine {
     let focusPos: THREE.Vector3;
 
     if (this.dead) {
-      this.deathAnimElapsed += dt;
-      const deathProgress = THREE.MathUtils.clamp(this.deathAnimElapsed / 2.5, 0, 1);
-      const groundSurfaceY = this.getSurfaceHeightAt(
-        this.deathOrbAnchor.x,
-        this.deathOrbAnchor.z,
-        this.deathOrbAnchor.y + 0.5,
-      );
-      this._ragdollFocus.set(
-        this.deathOrbAnchor.x,
-        Math.max(groundSurfaceY, this.deathOrbAnchor.y),
-        this.deathOrbAnchor.z,
-      );
+      const pelvisPos = this.ragdoll.update(dt);
+      this._ragdollFocus.copy(pelvisPos);
       focusPos = this._ragdollFocus;
-
-      const fadeAlpha = 1 - THREE.MathUtils.smoothstep(deathProgress, 0.08, 0.84);
-      const shrinkScale = 1 - 0.14 * THREE.MathUtils.smoothstep(deathProgress, 0.05, 0.9);
-      this.rig.root.position.set(
-        focusPos.x,
-        focusPos.y - deathProgress * 0.14,
-        focusPos.z,
-      );
-      this.rig.root.scale.setScalar(shrinkScale);
-      this.rig.setOpacity(fadeAlpha);
-
-      if (deathProgress >= 1) {
-        this.rig.root.visible = false;
-        this.blueOrbVfx.hide();
-      } else {
-        this.blueOrbVfx.update(
-          'death',
-          deathProgress,
-          dt,
-          focusPos.x,
-          focusPos.y,
-          focusPos.z,
-        );
-      }
 
       this.leftHandAura?.update(dt, 0);
       this.rightHandAura?.update(dt, 0);
@@ -11696,8 +11780,8 @@ export class GameEngine {
     this._right.set(cosY, 0, -sinY);
 
     const phoenixDiving = !this.dead && this.phoenixDiveState.phase !== 'idle';
-    if (!phoenixDiving && (this.cameraPitch < -0.12 || this.cameraPitch > 0.72)) {
-      const clampedPitch = THREE.MathUtils.clamp(this.cameraPitch, -0.12, 0.72);
+    if (!phoenixDiving && (this.cameraPitch < -0.45 || this.cameraPitch > 1.12)) {
+      const clampedPitch = THREE.MathUtils.clamp(this.cameraPitch, -0.45, 1.12);
       this.cameraPitch = THREE.MathUtils.damp(this.cameraPitch, clampedPitch, 10, dt);
     }
 
@@ -11795,6 +11879,8 @@ export class GameEngine {
       this.camera.rotateZ(this.fx.shakeRollRad);
     }
 
+    this.updatePcReticleAndAssist(dt);
+
     if (this.fx.screenFx.active || this.lastScreenFxSentActive) {
       this.callbacks.onScreenFxUpdate?.(this.fx.screenFx);
       this.lastScreenFxSentActive = this.fx.screenFx.active;
@@ -11857,6 +11943,8 @@ export class GameEngine {
       },
       astralBodyPos,
       (dmg, attackerId) => this.handleAstralBodyHit(dmg, 'weapon', attackerId),
+      undefined,
+      this.pcAimEnabled ? 0.17 : 0.34,
     );
 
     const aiSnapshots = this.aiEnemies.update(
@@ -11888,6 +11976,7 @@ export class GameEngine {
       astralBodyPos,
       (dmg, attackerId) => this.handleAstralBodyHit(dmg, 'ai-ability', attackerId),
       (pos, force, colorHex) => this.spawnRockBreak(pos, force, colorHex),
+      this.pcAimEnabled ? 0.17 : 0.34,
     );
 
     if (this.callbacks.onNpcHudUpdate) {
@@ -12185,6 +12274,7 @@ export class GameEngine {
     this.resizeObserver?.disconnect();
     window.removeEventListener('keydown', this.handleKeyDownBound);
     window.removeEventListener('keyup', this.handleKeyUpBound);
+    window.removeEventListener('blur', this.handleBlurBound);
     this.renderer.domElement.removeEventListener(
       'webglcontextlost',
       this.handleContextLostBound,

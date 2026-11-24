@@ -1509,6 +1509,7 @@ export class NpcCombatSystem {
     astralBodyPos: THREE.Vector3 | null = null,
     onAstralBodyHit?: (damage: number, attackerId: string) => void,
     onPistolShot?: (origin: THREE.Vector3) => void,
+    maxReticleDist = 0.34,
   ): NpcHudSnapshot[] {
     const safeDt = Math.min(dt, 0.05);
     this.animTime += safeDt;
@@ -2262,7 +2263,7 @@ export class NpcCombatSystem {
       const dy = this._proj.y - reticleNdcY;
       const reticleDist = Math.hypot(dx, dy);
 
-      if (reticleDist > 0.34) continue;
+      if (reticleDist > maxReticleDist) continue;
 
       const stickyBonus = npc.id === this.selectedTargetId ? -0.045 : 0;
       const score = reticleDist + distToPlayer * 0.004 + stickyBonus;

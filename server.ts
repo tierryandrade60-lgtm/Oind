@@ -103,6 +103,26 @@ const ttsAudioCache = new Map<string, Buffer>();
 const ttsInFlight = new Map<string, Promise<Buffer | null>>();
 const CHARACTER_NAME_PATTERN = /^[a-zA-Z0-9 .'\-&]{1,60}$/;
 let cachedGenAiClient: GoogleGenAI | null = null;
+let ttsBlockedUntilMs = 0;
+
+function parseTtsQuotaBackoffMs(err: unknown): number {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (
+    !msg.includes('429') &&
+    !msg.includes('RESOURCE_EXHAUSTED') &&
+    !/quota/i.test(msg)
+  ) {
+    return 0;
+  }
+  const match = msg.match(/retryDelay["']?\s*:\s*["']?(\d+(?:\.\d+)?)s/i);
+  if (match) {
+    const parsedMs = Math.ceil(Number.parseFloat(match[1]) * 1000);
+    if (Number.isFinite(parsedMs) && parsedMs > 0) {
+      return Math.min(24 * 60 * 60 * 1000, Math.max(60_000, parsedMs));
+    }
+  }
+  return 15 * 60 * 1000;
+}
 
 function getGenAiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -121,6 +141,8 @@ async function synthesizeCharacterNameWav(name: string): Promise<Buffer | null> 
   const cached = ttsAudioCache.get(cacheKey);
   if (cached) return cached;
 
+  if (Date.now() < ttsBlockedUntilMs) return null;
+
   const existingPromise = ttsInFlight.get(cacheKey);
   if (existingPromise) return existingPromise;
 
@@ -129,6 +151,7 @@ async function synthesizeCharacterNameWav(name: string): Promise<Buffer | null> 
 
   const work = (async (): Promise<Buffer | null> => {
     try {
+      if (Date.now() < ttsBlockedUntilMs) return null;
       const response = await ai.models.generateContent({
         model: 'gemini-3.8-flash-lite-tts',
         contents: [
@@ -164,7 +187,19 @@ async function synthesizeCharacterNameWav(name: string): Promise<Buffer | null> 
       ttsAudioCache.set(cacheKey, wavBuffer);
       return wavBuffer;
     } catch (err) {
-      console.warn('Character TTS synthesis failed:', err);
+      const quotaBackoffMs = parseTtsQuotaBackoffMs(err);
+      if (quotaBackoffMs > 0) {
+        if (Date.now() >= ttsBlockedUntilMs) {
+          const mins = Math.max(1, Math.round(quotaBackoffMs / 60_000));
+          console.warn(
+            `Character TTS quota reached; using browser voice fallback for ~${mins} min.`,
+          );
+        }
+        ttsBlockedUntilMs = Math.max(ttsBlockedUntilMs, Date.now() + quotaBackoffMs);
+      } else {
+        const reason = err instanceof Error ? err.message : 'Unknown TTS error';
+        console.warn('Character TTS synthesis unavailable:', reason);
+      }
       return null;
     } finally {
       ttsInFlight.delete(cacheKey);
@@ -376,7 +411,7 @@ async function startServer(): Promise<void> {
     }
     const wav = await synthesizeCharacterNameWav(rawName);
     if (!wav) {
-      res.status(503).json({ ok: false, error: 'TTS unavailable' });
+      res.status(204).end();
       return;
     }
     res.setHeader('Content-Type', 'audio/wav');

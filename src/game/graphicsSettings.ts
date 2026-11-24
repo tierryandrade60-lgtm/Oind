@@ -71,7 +71,16 @@ export const DEFAULT_GRAPHICS_SETTINGS: GraphicsSettings = {
   screenEffects: true,
 };
 
-const STORAGE_KEY = 'pixel_stride_settings_v2';
+const STORAGE_KEY_PC = 'pixel_stride_settings_pc_v2';
+const STORAGE_KEY_MOBILE = 'pixel_stride_settings_mobile_v2';
+const LEGACY_STORAGE_KEY = 'pixel_stride_settings_v2';
+
+export function getDefaultGraphicsSettings(isPc = false): GraphicsSettings {
+  return {
+    ...DEFAULT_GRAPHICS_SETTINGS,
+    sensitivity: isPc ? 50 : 55,
+  };
+}
 
 export function applyPresetToSettings(
   current: GraphicsSettings,
@@ -84,10 +93,12 @@ export function applyPresetToSettings(
   };
 }
 
-export function loadGraphicsSettings(): GraphicsSettings {
+export function loadGraphicsSettings(isPc = false): GraphicsSettings {
+  const defaults = getDefaultGraphicsSettings(isPc);
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_GRAPHICS_SETTINGS };
+    const key = isPc ? STORAGE_KEY_PC : STORAGE_KEY_MOBILE;
+    const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return defaults;
     const parsed = JSON.parse(raw) as Partial<GraphicsSettings>;
 
     const preset: QualityPreset =
@@ -96,24 +107,24 @@ export function loadGraphicsSettings(): GraphicsSettings {
       parsed.preset === 'high' ||
       parsed.preset === 'ultra'
         ? parsed.preset
-        : DEFAULT_GRAPHICS_SETTINGS.preset;
+        : defaults.preset;
 
     const crosshairStyle: CrosshairStyle =
       parsed.crosshairStyle === 'circle-dot' ||
       parsed.crosshairStyle === 'crosshair' ||
       parsed.crosshairStyle === 'dot'
         ? parsed.crosshairStyle
-        : DEFAULT_GRAPHICS_SETTINGS.crosshairStyle;
+        : defaults.crosshairStyle;
 
     const masterVolume =
       typeof parsed.masterVolume === 'number' && Number.isFinite(parsed.masterVolume)
         ? Math.min(100, Math.max(0, Math.round(parsed.masterVolume)))
-        : DEFAULT_GRAPHICS_SETTINGS.masterVolume;
+        : defaults.masterVolume;
 
     const sensitivity =
       typeof parsed.sensitivity === 'number' && Number.isFinite(parsed.sensitivity)
         ? Math.min(100, Math.max(0, Math.round(parsed.sensitivity)))
-        : DEFAULT_GRAPHICS_SETTINGS.sensitivity;
+        : defaults.sensitivity;
 
     const cameraZoom =
       typeof parsed.cameraZoom === 'number' && Number.isFinite(parsed.cameraZoom)
@@ -123,12 +134,12 @@ export function loadGraphicsSettings(): GraphicsSettings {
     const cameraShake =
       typeof parsed.cameraShake === 'boolean'
         ? parsed.cameraShake
-        : DEFAULT_GRAPHICS_SETTINGS.cameraShake;
+        : defaults.cameraShake;
 
     const screenEffects =
       typeof parsed.screenEffects === 'boolean'
         ? parsed.screenEffects
-        : DEFAULT_GRAPHICS_SETTINGS.screenEffects;
+        : defaults.screenEffects;
 
     return {
       preset,
@@ -141,13 +152,14 @@ export function loadGraphicsSettings(): GraphicsSettings {
       screenEffects,
     };
   } catch {
-    return { ...DEFAULT_GRAPHICS_SETTINGS };
+    return defaults;
   }
 }
 
-export function saveGraphicsSettings(settings: GraphicsSettings): void {
+export function saveGraphicsSettings(settings: GraphicsSettings, isPc = false): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    const key = isPc ? STORAGE_KEY_PC : STORAGE_KEY_MOBILE;
+    localStorage.setItem(key, JSON.stringify(settings));
   } catch {
     // Ignore storage quota / privacy mode errors
   }

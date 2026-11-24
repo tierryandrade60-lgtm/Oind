@@ -1,3 +1,5 @@
+import { useIsPc } from '../utils/platform';
+
 interface DeathScreenProps {
   onRespawn: () => void;
   onChangeCharacter: () => void;
@@ -7,6 +9,7 @@ export function DeathScreen({
   onRespawn,
   onChangeCharacter,
 }: DeathScreenProps) {
+  const isPc = useIsPc();
   return (
     <div
       role="dialog"
@@ -14,11 +17,15 @@ export function DeathScreen({
       aria-labelledby="death-screen-title"
       className="pointer-events-none fixed inset-x-0 z-40 flex justify-center select-none"
       style={{
-        top: 'max(14px, calc(var(--stage-safe-top, 0px) + 10px))',
+        top: isPc
+          ? 'max(28px, calc(var(--stage-safe-top, 0px) + 20px))'
+          : 'max(14px, calc(var(--stage-safe-top, 0px) + 10px))',
       }}
     >
       <div
-        className="animate-cartoon-pop-in pointer-events-auto flex flex-col items-center gap-1.5 text-center"
+        className={`animate-cartoon-pop-in pointer-events-auto flex flex-col items-center text-center ${
+          isPc ? 'gap-3.5' : 'gap-1.5'
+        }`}
         style={{ touchAction: 'manipulation' }}
         onPointerDown={(e) => e.stopPropagation()}
         onPointerMove={(e) => e.stopPropagation()}
@@ -27,8 +34,8 @@ export function DeathScreen({
       >
         {/* Top-Center Skull */}
         <svg
-          width="30"
-          height="30"
+          width={isPc ? '52' : '30'}
+          height={isPc ? '52' : '30'}
           viewBox="0 0 24 24"
           fill="none"
           aria-hidden="true"
@@ -55,7 +62,9 @@ export function DeathScreen({
 
         <h2
           id="death-screen-title"
-          className="font-cartoon text-lg font-extrabold italic uppercase tracking-wide text-white leading-none"
+          className={`font-cartoon font-extrabold italic uppercase tracking-wide text-white leading-none ${
+            isPc ? 'text-4xl' : 'text-lg'
+          }`}
           style={{
             WebkitTextStroke: '2.5px #0B0D18',
             paintOrder: 'stroke fill',
@@ -66,7 +75,7 @@ export function DeathScreen({
         </h2>
 
         {/* Two Small Transparent Action Buttons */}
-        <div className="mt-0.5 flex items-center gap-2">
+        <div className={`mt-1 flex items-center ${isPc ? 'gap-4' : 'gap-2'}`}>
           <button
             type="button"
             onPointerDown={(e) => {
@@ -81,7 +90,9 @@ export function DeathScreen({
               }
             }}
             onContextMenu={(e) => e.preventDefault()}
-            className="cursor-pointer rounded-[6px] px-3 py-1 font-cartoon text-[11px] font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            className={`cursor-pointer rounded-[6px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white ${
+              isPc ? 'px-6 py-2.5 text-[16px]' : 'px-3 py-1 text-[11px]'
+            }`}
             style={{
               backgroundColor: 'rgba(14, 18, 36, 0.28)',
               backdropFilter: 'blur(4px)',
@@ -108,7 +119,9 @@ export function DeathScreen({
               }
             }}
             onContextMenu={(e) => e.preventDefault()}
-            className="cursor-pointer rounded-[6px] px-3 py-1 font-cartoon text-[11px] font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            className={`cursor-pointer rounded-[6px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white ${
+              isPc ? 'px-6 py-2.5 text-[16px]' : 'px-3 py-1 text-[11px]'
+            }`}
             style={{
               backgroundColor: 'rgba(14, 18, 36, 0.28)',
               backdropFilter: 'blur(4px)',

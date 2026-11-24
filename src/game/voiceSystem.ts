@@ -14,6 +14,7 @@ export class CharacterSelectionVoicePlayer {
   private static readonly ANNOUNCER_PITCH = 0.94;
   private static readonly ANNOUNCER_RATE = 0.96;
   private static readonly ANNOUNCER_VOLUME_SCALE = 0.9;
+  private static aiTtsUnavailableUntilMs = 0;
 
   private cachedVoices: SpeechSynthesisVoice[] = [];
   private cachedAnnouncerVoice: SpeechSynthesisVoice | null = null;
@@ -217,6 +218,10 @@ export class CharacterSelectionVoicePlayer {
     let audioUrl = this.audioUrlCache.get(cacheKey);
 
     if (!audioUrl) {
+      if (Date.now() < CharacterSelectionVoicePlayer.aiTtsUnavailableUntilMs) {
+        this.dispatchFallbackAnnouncement(characterName, gen);
+        return;
+      }
       const controller = new AbortController();
       this.activeFetchController = controller;
       try {
@@ -227,7 +232,8 @@ export class CharacterSelectionVoicePlayer {
         if (this.activeFetchController === controller) {
           this.activeFetchController = null;
         }
-        if (!res.ok) {
+        if (res.status === 204 || !res.ok) {
+          CharacterSelectionVoicePlayer.aiTtsUnavailableUntilMs = Date.now() + 10 * 60_000;
           this.dispatchFallbackAnnouncement(characterName, gen);
           return;
         }

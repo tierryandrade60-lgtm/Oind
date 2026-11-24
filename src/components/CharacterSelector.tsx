@@ -4,6 +4,7 @@ import { getCharacterPortraitUrl } from '../game/characterPortrait';
 import { CharacterDefinition, resolveCharacterWithSkin } from '../game/characters';
 import { AbilityIcon } from './AbilityIcon';
 import { CharacterPreviewCanvas } from './CharacterPreviewCanvas';
+import { useIsPc } from '../utils/platform';
 
 const PURPLE_DOT_PATTERN =
   'radial-gradient(circle, rgba(142, 145, 218, 0.34) 1.45px, transparent 1.55px), radial-gradient(circle, rgba(142, 145, 218, 0.34) 1.45px, transparent 1.55px)';
@@ -38,6 +39,7 @@ export const CharacterSelector = memo(function CharacterSelector({
   onConfirmSelect,
   onBack,
 }: CharacterSelectorProps) {
+  const isPc = useIsPc();
   const selected =
     characters.find((c) => c.id === selectedId) ?? characters[0];
 
@@ -101,10 +103,18 @@ export const CharacterSelector = memo(function CharacterSelector({
       style={{
         background:
           'radial-gradient(circle at 40% 45%, #7BC1FF 0%, #4281D6 56%, #23437D 100%)',
-        paddingTop: 'max(8px, var(--stage-safe-top, 0px))',
-        paddingBottom: 'max(8px, var(--stage-safe-bottom, 0px))',
-        paddingLeft: 'max(12px, var(--stage-safe-left, 0px))',
-        paddingRight: 'max(12px, var(--stage-safe-right, 0px))',
+        paddingTop: isPc
+          ? 'max(22px, var(--stage-safe-top, 0px))'
+          : 'max(8px, var(--stage-safe-top, 0px))',
+        paddingBottom: isPc
+          ? 'max(22px, var(--stage-safe-bottom, 0px))'
+          : 'max(8px, var(--stage-safe-bottom, 0px))',
+        paddingLeft: isPc
+          ? 'max(32px, var(--stage-safe-left, 0px))'
+          : 'max(12px, var(--stage-safe-left, 0px))',
+        paddingRight: isPc
+          ? 'max(32px, var(--stage-safe-right, 0px))'
+          : 'max(12px, var(--stage-safe-right, 0px))',
         touchAction: 'manipulation',
       }}
     >
@@ -120,12 +130,14 @@ export const CharacterSelector = memo(function CharacterSelector({
 
       {/* Top Header: Back + Title + Coin Balance */}
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 px-1">
-        <div className="flex items-center gap-2">
+        <div className={`flex items-center ${isPc ? 'gap-4' : 'gap-2'}`}>
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="inline-flex items-center gap-1.5 rounded-[8px] px-3 py-1 font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
+              className={`inline-flex items-center gap-2 rounded-[8px] font-cartoon font-bold italic uppercase tracking-wide text-white transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer ${
+                isPc ? 'px-5 py-2.5' : 'px-3 py-1'
+              }`}
               style={{
                 backgroundColor: '#3E4182',
                 backgroundImage: PURPLE_DOT_PATTERN,
@@ -133,13 +145,15 @@ export const CharacterSelector = memo(function CharacterSelector({
                 backgroundPosition: '0 0, 5px 5px',
                 border: '2.5px solid #0B0D18',
                 boxShadow: '2px 3px 0 rgba(8, 10, 18, 0.85)',
-                fontSize: 'clamp(10.5px, 1.5vw, 13px)',
+                fontSize: isPc
+                  ? 'clamp(16px, 1.35vw, 19px)'
+                  : 'clamp(10.5px, 1.5vw, 13px)',
                 textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.9)',
               }}
             >
               <svg
-                width="14"
-                height="14"
+                width={isPc ? '21' : '14'}
+                height={isPc ? '21' : '14'}
                 viewBox="0 0 24 24"
                 fill="none"
                 aria-hidden="true"
@@ -156,7 +170,9 @@ export const CharacterSelector = memo(function CharacterSelector({
             </button>
           )}
           <div
-            className="inline-flex items-center gap-2 rounded-[8px] px-3 py-1"
+            className={`inline-flex items-center gap-2 rounded-[8px] ${
+              isPc ? 'px-5 py-2.5' : 'px-3 py-1'
+            }`}
             style={{
               backgroundColor: '#2B2D5C',
               backgroundImage: PURPLE_DOT_PATTERN,
@@ -167,13 +183,17 @@ export const CharacterSelector = memo(function CharacterSelector({
             }}
           >
             <span
-              className="inline-block h-2.5 w-2.5 rounded-full border border-[#0B0D18]"
+              className={`inline-block rounded-full border border-[#0B0D18] ${
+                isPc ? 'h-3.5 w-3.5' : 'h-2.5 w-2.5'
+              }`}
               style={{ backgroundColor: resolved.preview.accentColor }}
             />
             <span
               className="font-cartoon font-bold italic uppercase tracking-wide text-white"
               style={{
-                fontSize: 'clamp(11px, 1.65vw, 14px)',
+                fontSize: isPc
+                  ? 'clamp(16.5px, 1.45vw, 20px)'
+                  : 'clamp(11px, 1.65vw, 14px)',
                 textShadow: '0 1.5px 0 rgba(8, 10, 18, 0.9)',
               }}
             >
@@ -185,7 +205,9 @@ export const CharacterSelector = memo(function CharacterSelector({
         {/* Synchronized Coin Balance */}
         <div
           aria-label={`Coins: ${coins}`}
-          className="inline-flex items-center gap-1.5 rounded-full px-3 py-0.5"
+          className={`inline-flex items-center rounded-full ${
+            isPc ? 'gap-2.5 px-5 py-2' : 'gap-1.5 px-3 py-0.5'
+          }`}
           style={{
             backgroundColor: '#252752',
             border: '2px solid #0B0D18',
@@ -193,8 +215,8 @@ export const CharacterSelector = memo(function CharacterSelector({
           }}
         >
           <svg
-            width="15"
-            height="15"
+            width={isPc ? '22' : '15'}
+            height={isPc ? '22' : '15'}
             viewBox="0 0 24 24"
             fill="none"
             aria-hidden="true"
@@ -219,7 +241,9 @@ export const CharacterSelector = memo(function CharacterSelector({
           <span
             className="font-cartoon font-bold tabular-nums text-white"
             style={{
-              fontSize: 'clamp(11.5px, 1.4vw, 13.5px)',
+              fontSize: isPc
+                ? 'clamp(16.5px, 1.4vw, 20px)'
+                : 'clamp(11.5px, 1.4vw, 13.5px)',
               textShadow: '0 1px 0 rgba(8, 10, 18, 0.85)',
             }}
           >
@@ -229,7 +253,7 @@ export const CharacterSelector = memo(function CharacterSelector({
       </header>
 
       {/* Main Content: Live 3D Character Preview + No-Scroll Side Info Panel */}
-      <div className="relative z-10 flex flex-1 min-h-0 items-stretch gap-3 py-1">
+      <div className={`relative z-10 flex flex-1 min-h-0 items-stretch ${isPc ? 'gap-6 py-3' : 'gap-3 py-1'}`}>
         {/* Center 3D Character Preview */}
         <div className="relative flex-1 min-w-0 min-h-0 flex items-center justify-center">
           <CharacterPreviewCanvas
@@ -238,7 +262,9 @@ export const CharacterSelector = memo(function CharacterSelector({
             forcedLandscape={forcedLandscape}
           />
           <div
-            className="pointer-events-none absolute bottom-1 left-1/2 -translate-x-1/2 rounded-full px-2.5 py-0.5 font-cartoon text-[9.5px] font-bold uppercase tracking-wider text-white/90"
+            className={`pointer-events-none absolute bottom-1 left-1/2 -translate-x-1/2 rounded-full font-cartoon font-bold uppercase tracking-wider text-white/90 ${
+              isPc ? 'px-4 py-1.5 text-[13.5px]' : 'px-2.5 py-0.5 text-[9.5px]'
+            }`}
             style={{
               backgroundColor: 'rgba(19, 25, 56, 0.68)',
               border: '1.5px solid rgba(11, 13, 24, 0.85)',
@@ -252,9 +278,13 @@ export const CharacterSelector = memo(function CharacterSelector({
         <aside
           key={selected.id}
           onPointerDown={(e) => e.stopPropagation()}
-          className="animate-cartoon-pop-in relative flex flex-col justify-between overflow-hidden rounded-[10px] p-2.5 sm:p-3"
+          className={`animate-cartoon-pop-in relative flex flex-col justify-between overflow-hidden rounded-[10px] ${
+            isPc ? 'p-5.5' : 'p-2.5 sm:p-3'
+          }`}
           style={{
-            width: 'clamp(245px, 39vw, 345px)',
+            width: isPc
+              ? 'clamp(380px, 34vw, 510px)'
+              : 'clamp(245px, 39vw, 345px)',
             backgroundColor: '#2B2D5C',
             backgroundImage: PURPLE_DOT_PATTERN,
             backgroundSize: '12px 12px',
@@ -269,9 +299,11 @@ export const CharacterSelector = memo(function CharacterSelector({
             <div
               key={inspectedAbility.id}
               role="status"
-              className="pointer-events-none animate-cartoon-pop-in absolute left-2 right-2 z-30 rounded-[8px] px-2.5 py-2"
+              className={`pointer-events-none animate-cartoon-pop-in absolute z-30 rounded-[8px] ${
+                isPc ? 'left-4 right-4 px-4 py-3' : 'left-2 right-2 px-2.5 py-2'
+              }`}
               style={{
-                bottom: 'clamp(82px, 23vh, 98px)',
+                bottom: isPc ? 'clamp(124px, 24vh, 152px)' : 'clamp(82px, 23vh, 98px)',
                 backgroundColor: '#181A38',
                 border: '2.5px solid #FFD147',
                 boxShadow:
@@ -280,13 +312,17 @@ export const CharacterSelector = memo(function CharacterSelector({
             >
               <div className="flex flex-wrap items-center justify-between gap-1">
                 <span
-                  className="font-cartoon text-[11px] font-bold italic uppercase text-white"
+                  className={`font-cartoon font-bold italic uppercase text-white ${
+                    isPc ? 'text-[15px]' : 'text-[11px]'
+                  }`}
                   style={{ textShadow: '0 1px 0 #0B0D18' }}
                 >
                   {inspectedAbility.name}
                 </span>
                 <span
-                  className="rounded-[4px] px-1.5 py-[1px] font-cartoon text-[8.5px] font-bold uppercase text-[#0B0D18]"
+                  className={`rounded-[4px] px-2 py-[1.5px] font-cartoon font-bold uppercase text-[#0B0D18] ${
+                    isPc ? 'text-[12px]' : 'text-[8.5px]'
+                  }`}
                   style={{
                     backgroundColor: '#FFD147',
                     border: '1px solid #0B0D18',
@@ -295,18 +331,24 @@ export const CharacterSelector = memo(function CharacterSelector({
                   {inspectedAbility.type}
                 </span>
               </div>
-              <p className="mt-1 font-cartoon text-[10px] leading-snug text-indigo-100">
+              <p
+                className={`mt-1.5 font-cartoon leading-snug text-indigo-100 ${
+                  isPc ? 'text-[13.5px]' : 'text-[10px]'
+                }`}
+              >
                 {inspectedAbility.description}
               </p>
             </div>
           )}
 
           {/* Top Identity Section */}
-          <div className="flex flex-col gap-1">
+          <div className={`flex flex-col ${isPc ? 'gap-2' : 'gap-1'}`}>
             <h1
               className="font-cartoon font-bold italic uppercase leading-tight truncate"
               style={{
-                fontSize: 'clamp(14px, 2.1vw, 19px)',
+                fontSize: isPc
+                  ? 'clamp(24px, 2.3vw, 31px)'
+                  : 'clamp(14px, 2.1vw, 19px)',
                 color: resolved.nameColor,
                 textShadow: '0 2px 0 rgba(8, 10, 18, 0.94)',
               }}
@@ -314,11 +356,13 @@ export const CharacterSelector = memo(function CharacterSelector({
               {resolved.displayName}
             </h1>
 
-            <div className="flex flex-wrap items-center gap-1">
+            <div className={`flex flex-wrap items-center ${isPc ? 'gap-2' : 'gap-1'}`}>
               {selected.tags.map((tag, idx) => (
                 <span
                   key={tag}
-                  className="rounded-[4px] px-1.5 py-[1px] font-cartoon text-[9px] font-bold uppercase tracking-wide"
+                  className={`rounded-[4px] font-cartoon font-bold uppercase tracking-wide ${
+                    isPc ? 'px-2.5 py-0.5 text-[12.5px]' : 'px-1.5 py-[1px] text-[9px]'
+                  }`}
                   style={{
                     backgroundColor: idx === 0 ? '#FFD147' : '#3C3F78',
                     color: idx === 0 ? '#0B0D18' : '#FFFFFF',
@@ -332,23 +376,29 @@ export const CharacterSelector = memo(function CharacterSelector({
 
             <p
               className="font-cartoon text-indigo-100/90 leading-snug line-clamp-2"
-              style={{ fontSize: 'clamp(9.8px, 1.2vw, 11.2px)' }}
+              style={{
+                fontSize: isPc
+                  ? 'clamp(13.5px, 1.15vw, 15.5px)'
+                  : 'clamp(9.8px, 1.2vw, 11.2px)',
+              }}
             >
               {selected.description}
             </p>
           </div>
 
           {/* Middle Section: Compact Square Skin Cards (or Coming Soon) */}
-          <div className="flex flex-col gap-1 py-0.5">
+          <div className={`flex flex-col py-0.5 ${isPc ? 'gap-2' : 'gap-1'}`}>
             <span
-              className="font-cartoon text-[9px] font-bold uppercase tracking-wider text-indigo-200"
+              className={`font-cartoon font-bold uppercase tracking-wider text-indigo-200 ${
+                isPc ? 'text-[13px]' : 'text-[9px]'
+              }`}
               style={{ textShadow: '0 1px 0 rgba(8, 10, 18, 0.9)' }}
             >
               Skins
             </span>
 
             {selected.skins && selected.skins.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className={`flex flex-wrap items-center ${isPc ? 'gap-2.5' : 'gap-1.5'}`}>
                 {selected.skins.map((skin) => {
                   const isOwned =
                     skin.price === 0 || unlockedSkins.includes(skin.id);
@@ -371,10 +421,14 @@ export const CharacterSelector = memo(function CharacterSelector({
                           onPurchaseSkin(selected.id, skin.id, skin.price);
                         }
                       }}
-                      className="relative shrink-0 overflow-hidden rounded-[7px] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                      className="relative shrink-0 overflow-hidden rounded-[7px] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
                       style={{
-                        width: 'clamp(50px, 6.8vw, 58px)',
-                        height: 'clamp(50px, 6.8vw, 58px)',
+                        width: isPc
+                          ? 'clamp(68px, 5.4vw, 84px)'
+                          : 'clamp(50px, 6.8vw, 58px)',
+                        height: isPc
+                          ? 'clamp(68px, 5.4vw, 84px)'
+                          : 'clamp(50px, 6.8vw, 58px)',
                         backgroundColor: '#FFFFFF',
                         border: isEquipped
                           ? '3px solid #FFD147'
@@ -412,7 +466,9 @@ export const CharacterSelector = memo(function CharacterSelector({
 
                         {!isOwned && (
                           <span
-                            className="absolute top-0.5 right-0.5 rounded-[3px] px-1 py-[0.5px] font-cartoon text-[7px] font-extrabold leading-none"
+                            className={`absolute top-0.5 right-0.5 rounded-[3px] px-1 py-[0.5px] font-cartoon font-extrabold leading-none ${
+                              isPc ? 'text-[10.5px]' : 'text-[7px]'
+                            }`}
                             style={{
                               backgroundColor: canAfford ? '#FFD147' : '#3C2434',
                               color: canAfford ? '#0B0D18' : '#FF9494',
@@ -425,7 +481,9 @@ export const CharacterSelector = memo(function CharacterSelector({
 
                         {isEquipped && (
                           <span
-                            className="absolute bottom-0 inset-x-0 truncate bg-[#0B0D18]/85 px-0.5 py-[1px] text-center font-cartoon text-[6.8px] font-extrabold uppercase leading-none text-[#6EE7B7]"
+                            className={`absolute bottom-0 inset-x-0 truncate bg-[#0B0D18]/85 px-0.5 py-[1px] text-center font-cartoon font-extrabold uppercase leading-none text-[#6EE7B7] ${
+                              isPc ? 'text-[10px]' : 'text-[6.8px]'
+                            }`}
                           >
                             {skin.shortName}
                           </span>
@@ -440,7 +498,9 @@ export const CharacterSelector = memo(function CharacterSelector({
                 type="button"
                 disabled
                 aria-disabled="true"
-                className="flex w-full items-center justify-center rounded-[6px] px-2.5 py-1 font-cartoon text-[10px] font-bold italic uppercase tracking-wider text-indigo-200/80"
+                className={`flex w-full items-center justify-center rounded-[6px] px-2.5 font-cartoon font-bold italic uppercase tracking-wider text-indigo-200/80 ${
+                  isPc ? 'py-2.5 text-[13.5px]' : 'py-1 text-[10px]'
+                }`}
                 style={{
                   backgroundColor: '#1E2044',
                   border: '2px solid #0B0D18',
@@ -454,22 +514,34 @@ export const CharacterSelector = memo(function CharacterSelector({
           </div>
 
           {/* Bottom Section: Gameplay-Identical Ability Buttons with Hover/Tap Info */}
-          <div className="flex flex-col gap-1.5">
+          <div className={`flex flex-col ${isPc ? 'gap-2.5' : 'gap-1.5'}`}>
             <div className="flex items-center justify-between">
               <span
-                className="font-cartoon text-[9.5px] font-bold uppercase tracking-wider text-indigo-200"
+                className={`font-cartoon font-bold uppercase tracking-wider text-indigo-200 ${
+                  isPc ? 'text-[13px]' : 'text-[9.5px]'
+                }`}
                 style={{ textShadow: '0 1px 0 rgba(8, 10, 18, 0.9)' }}
               >
                 Abilities
               </span>
-              <span className="font-cartoon text-[8.5px] font-semibold text-indigo-200/75">
+              <span
+                className={`font-cartoon font-semibold text-indigo-200/75 ${
+                  isPc ? 'text-[12px]' : 'text-[8.5px]'
+                }`}
+              >
                 Hover / Tap for info
               </span>
             </div>
 
             <div
               className={`flex items-center justify-between ${
-                resolved.abilities.length >= 5 ? 'gap-1' : 'gap-1.5'
+                resolved.abilities.length >= 5
+                  ? isPc
+                    ? 'gap-2'
+                    : 'gap-1'
+                  : isPc
+                    ? 'gap-2.5'
+                    : 'gap-1.5'
               }`}
             >
               {resolved.abilities.map((ab) => {
@@ -485,11 +557,11 @@ export const CharacterSelector = memo(function CharacterSelector({
                       <div
                         className="pointer-events-none absolute z-20 flex items-center justify-center rounded-full font-cartoon font-bold italic text-white"
                         style={{
-                          top: '-6px',
-                          right: '-3px',
-                          width: '17px',
-                          height: '17px',
-                          fontSize: '10px',
+                          top: isPc ? '-8px' : '-6px',
+                          right: isPc ? '-2px' : '-3px',
+                          width: isPc ? '23px' : '17px',
+                          height: isPc ? '23px' : '17px',
+                          fontSize: isPc ? '12.5px' : '10px',
                           lineHeight: 1,
                           backgroundColor: '#E53540',
                           border: '1.5px solid #0B0D18',
@@ -520,14 +592,22 @@ export const CharacterSelector = memo(function CharacterSelector({
                         );
                       }}
                       aria-label={`${ab.name}: ${ab.type}`}
-                      className="flex flex-col items-center justify-center gap-[2px] rounded-[3px] p-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                      className="flex flex-col items-center justify-center gap-[2px] rounded-[3px] p-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
                       style={{
-                        width: isFiveSlots
-                          ? 'clamp(38px, 5.2vw, 47px)'
-                          : 'clamp(46px, 6.4vw, 56px)',
-                        height: isFiveSlots
-                          ? 'clamp(38px, 5.2vw, 47px)'
-                          : 'clamp(46px, 6.4vw, 56px)',
+                        width: isPc
+                          ? isFiveSlots
+                            ? 'clamp(58px, 4.6vw, 72px)'
+                            : 'clamp(68px, 5.4vw, 84px)'
+                          : isFiveSlots
+                            ? 'clamp(38px, 5.2vw, 47px)'
+                            : 'clamp(46px, 6.4vw, 56px)',
+                        height: isPc
+                          ? isFiveSlots
+                            ? 'clamp(58px, 4.6vw, 72px)'
+                            : 'clamp(68px, 5.4vw, 84px)'
+                          : isFiveSlots
+                            ? 'clamp(38px, 5.2vw, 47px)'
+                            : 'clamp(46px, 6.4vw, 56px)',
                         backgroundColor: isInspected ? '#474986' : '#353664',
                         backgroundImage: PURPLE_DOT_PATTERN,
                         backgroundSize: '10px 10px',
@@ -541,19 +621,27 @@ export const CharacterSelector = memo(function CharacterSelector({
                     >
                       <AbilityIcon
                         id={ab.id}
-                        size={isFiveSlots ? 15 : 17}
+                        size={isPc ? (isFiveSlots ? 22 : 26) : isFiveSlots ? 15 : 17}
                         variant={resolved.skin?.id === 'speed' ? 'green' : 'blue'}
                       />
                       <span
                         className="font-cartoon font-bold italic uppercase text-center leading-[0.92] text-white"
                         style={{
-                          fontSize: isFiveSlots
-                            ? ab.name.length > 9
-                              ? '5.4px'
-                              : '6.2px'
-                            : ab.name.length > 10
-                              ? '6.2px'
-                              : '7.4px',
+                          fontSize: isPc
+                            ? isFiveSlots
+                              ? ab.name.length > 9
+                                ? '8.5px'
+                                : '9.5px'
+                              : ab.name.length > 10
+                                ? '9.5px'
+                                : '10.8px'
+                            : isFiveSlots
+                              ? ab.name.length > 9
+                                ? '5.4px'
+                                : '6.2px'
+                              : ab.name.length > 10
+                                ? '6.2px'
+                                : '7.4px',
                           textShadow: '0 1px 0 rgba(8, 10, 18, 0.94)',
                         }}
                       >
@@ -569,8 +657,8 @@ export const CharacterSelector = memo(function CharacterSelector({
       </div>
 
       {/* Bottom Bar: Character Portrait Selector + Prominent SELECT CTA */}
-      <footer className="relative z-10 flex shrink-0 items-center justify-between gap-3 pt-1">
-        <div className="flex items-center gap-2 overflow-x-auto py-0.5">
+      <footer className={`relative z-10 flex shrink-0 items-center justify-between gap-3 ${isPc ? 'pt-2.5' : 'pt-1'}`}>
+        <div className={`flex items-center overflow-x-auto py-0.5 ${isPc ? 'gap-3' : 'gap-2'}`}>
           {characters.map((char) => {
             const isActive = char.id === selected.id;
             const portrait = portraitsById[char.id];
@@ -592,10 +680,14 @@ export const CharacterSelector = memo(function CharacterSelector({
                     onSelectCharacter(char.id);
                   }
                 }}
-                className="relative shrink-0 overflow-hidden rounded-[7px] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                className="relative shrink-0 overflow-hidden rounded-[7px] transition-transform active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
                 style={{
-                  width: 'clamp(46px, 7vh, 54px)',
-                  height: 'clamp(46px, 7vh, 54px)',
+                  width: isPc
+                    ? 'clamp(66px, 8.2vh, 84px)'
+                    : 'clamp(46px, 7vh, 54px)',
+                  height: isPc
+                    ? 'clamp(66px, 8.2vh, 84px)'
+                    : 'clamp(46px, 7vh, 54px)',
                   backgroundColor: '#FFFFFF',
                   border: isActive
                     ? '3px solid #FFD147'
@@ -648,10 +740,16 @@ export const CharacterSelector = memo(function CharacterSelector({
               onConfirmSelect();
             }
           }}
-          className="flex shrink-0 items-center justify-center gap-2 rounded-[10px] px-6 py-2 font-cartoon font-bold italic uppercase tracking-wider text-white transition-transform active:translate-y-[2px] active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          className={`flex shrink-0 items-center justify-center gap-2.5 rounded-[10px] font-cartoon font-bold italic uppercase tracking-wider text-white transition-transform active:translate-y-[2px] active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer ${
+            isPc ? 'px-10 py-3' : 'px-6 py-2'
+          }`}
           style={{
-            minHeight: 'clamp(42px, 6.8vh, 50px)',
-            fontSize: 'clamp(14px, 2vw, 17px)',
+            minHeight: isPc
+              ? 'clamp(58px, 7.6vh, 72px)'
+              : 'clamp(42px, 6.8vh, 50px)',
+            fontSize: isPc
+              ? 'clamp(20px, 1.9vw, 26px)'
+              : 'clamp(14px, 2vw, 17px)',
             backgroundColor: '#2ECC71',
             border: '2.5px solid #0B0D18',
             boxShadow:
@@ -661,8 +759,8 @@ export const CharacterSelector = memo(function CharacterSelector({
         >
           <span>SELECT</span>
           <svg
-            width="18"
-            height="18"
+            width={isPc ? '25' : '18'}
+            height={isPc ? '25' : '18'}
             viewBox="0 0 24 24"
             fill="none"
             aria-hidden="true"

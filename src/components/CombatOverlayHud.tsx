@@ -1,5 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef } from 'react';
 import { NpcHudSnapshot } from '../game/npcSystem';
+import { useIsPc } from '../utils/platform';
 
 export interface CombatOverlayHudHandle {
   update: (snapshots: NpcHudSnapshot[]) => void;
@@ -47,6 +48,7 @@ interface SlotRefs {
  */
 export const CombatOverlayHud = forwardRef<CombatOverlayHudHandle>(
   function CombatOverlayHud(_props, ref) {
+    const isPc = useIsPc();
     const slotsRef = useRef<SlotRefs[]>(
       Array.from({ length: MAX_NPC_SLOTS }, () => ({
         root: null,
@@ -224,8 +226,8 @@ export const CombatOverlayHud = forwardRef<CombatOverlayHudHandle>(
               className="mb-1 flex items-center justify-center"
             >
               <svg
-                width="20"
-                height="16"
+                width={isPc ? '24' : '20'}
+                height={isPc ? '19' : '16'}
                 viewBox="0 0 24 20"
                 fill="none"
                 aria-hidden="true"
@@ -249,7 +251,9 @@ export const CombatOverlayHud = forwardRef<CombatOverlayHudHandle>(
                 ref={(el) => {
                   slotsRef.current[idx].nameLabel = el;
                 }}
-                className="mb-[2px] whitespace-nowrap font-cartoon text-[10px] font-extrabold italic uppercase tracking-wide text-white"
+                className={`mb-[2px] whitespace-nowrap font-cartoon font-extrabold italic uppercase tracking-wide text-white ${
+                  isPc ? 'text-[15px]' : 'text-[10px]'
+                }`}
                 style={{
                   WebkitTextStroke: '2.5px #0B0D18',
                   paintOrder: 'stroke fill',
@@ -262,8 +266,8 @@ export const CombatOverlayHud = forwardRef<CombatOverlayHudHandle>(
               <div
                 className="relative overflow-hidden"
                 style={{
-                  width: '104px',
-                  height: '14px',
+                  width: isPc ? '152px' : '104px',
+                  height: isPc ? '20px' : '14px',
                   backgroundColor: '#161724',
                   border: '2.5px solid #0B0D18',
                   boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.88)',
@@ -330,8 +334,8 @@ export const CombatOverlayHud = forwardRef<CombatOverlayHudHandle>(
                 position: 'absolute',
                 left: 'calc(100% + 7px)',
                 bottom: 0,
-                width: '7px',
-                height: '28px',
+                width: isPc ? '9px' : '7px',
+                height: isPc ? '34px' : '28px',
                 backgroundColor: '#161724',
                 border: '2px solid #0B0D18',
                 boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.88)',
@@ -373,7 +377,7 @@ export const CombatOverlayHud = forwardRef<CombatOverlayHudHandle>(
                 }}
                 className="block whitespace-nowrap font-cartoon font-extrabold italic leading-none text-[#FF3B4E]"
                 style={{
-                  fontSize: '25px',
+                  fontSize: isPc ? '35px' : '25px',
                   WebkitTextStroke: '4.5px #0B0D18',
                   paintOrder: 'stroke fill',
                   textShadow: '2px 2.5px 0 #0B0D18',

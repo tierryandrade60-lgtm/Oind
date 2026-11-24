@@ -12,6 +12,7 @@ import {
   PlayerCombatTelemetry,
   StatusEffectCategory,
 } from '../game/statusEffectTypes';
+import { useIsPc } from '../utils/platform';
 
 export interface PlayerCombatHudHandle {
   updateTelemetry: (telemetry: PlayerCombatTelemetry) => void;
@@ -175,6 +176,7 @@ function StatusEffectSvg({ id, color }: { id: StatusEffectCategory; color: strin
 
 export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
   function PlayerCombatHud(_props, ref) {
+    const isPc = useIsPc();
     // Shield bar right of character
     const shieldRootRef = useRef<HTMLDivElement | null>(null);
     const shieldFillRef = useRef<HTMLDivElement | null>(null);
@@ -568,8 +570,8 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
           <div
             className="relative flex flex-col justify-end overflow-hidden rounded-[4px]"
             style={{
-              width: '10px',
-              height: '58px',
+              width: isPc ? '13px' : '10px',
+              height: isPc ? '72px' : '58px',
               backgroundColor: '#121324',
               border: '2px solid #0B0D18',
               boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.88)',
@@ -592,7 +594,9 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
           </div>
           <span
             ref={shieldTextRef}
-            className="font-cartoon text-[9.5px] font-extrabold italic leading-none tabular-nums text-white"
+            className={`font-cartoon font-extrabold italic leading-none tabular-nums text-white ${
+              isPc ? 'text-[12px]' : 'text-[9.5px]'
+            }`}
             style={{
               WebkitTextStroke: '2.5px #0B0D18',
               paintOrder: 'stroke fill',
@@ -618,8 +622,8 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
           <div
             className="relative flex flex-col justify-end overflow-hidden rounded-[4px]"
             style={{
-              width: '10px',
-              height: '58px',
+              width: isPc ? '13px' : '10px',
+              height: isPc ? '72px' : '58px',
               backgroundColor: '#121526',
               border: '2px solid #0B0D18',
               boxShadow: '1.5px 2px 0 rgba(8, 10, 18, 0.88)',
@@ -653,7 +657,9 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
           </div>
           <span
             ref={energyTextRef}
-            className="font-cartoon text-[9.5px] font-extrabold italic leading-none tabular-nums text-[#E0F2FE]"
+            className={`font-cartoon font-extrabold italic leading-none tabular-nums text-[#E0F2FE] ${
+              isPc ? 'text-[12px]' : 'text-[9.5px]'
+            }`}
             style={{
               WebkitTextStroke: '2.5px #0B0D18',
               paintOrder: 'stroke fill',
@@ -678,8 +684,8 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
         >
           <svg
             ref={streakSvgRef}
-            width="16"
-            height="16"
+            width={isPc ? '21' : '16'}
+            height={isPc ? '21' : '16'}
             viewBox="0 0 24 24"
             fill="none"
             aria-hidden="true"
@@ -694,7 +700,9 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
           </svg>
           <span
             ref={streakTextRef}
-            className="whitespace-nowrap font-cartoon text-[13px] font-extrabold italic leading-none tabular-nums"
+            className={`whitespace-nowrap font-cartoon font-extrabold italic leading-none tabular-nums ${
+              isPc ? 'text-[16px]' : 'text-[13px]'
+            }`}
             style={{
               color: '#D1D5DB',
               WebkitTextStroke: '2.8px #0B0D18',
@@ -725,7 +733,9 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
               ref={(el) => {
                 protectedRefs.current[idx].label = el;
               }}
-              className="block whitespace-nowrap font-cartoon text-[14px] font-extrabold italic uppercase tracking-wide"
+              className={`block whitespace-nowrap font-cartoon font-extrabold italic uppercase tracking-wide ${
+                isPc ? 'text-[17px]' : 'text-[14px]'
+              }`}
               style={{
                 color: '#7DD3FC',
                 WebkitTextStroke: '3.5px #0B0D18',
@@ -744,11 +754,13 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
             key={multiKill.key}
             className="animate-cartoon-pop-in fixed left-1/2 z-30 -translate-x-1/2"
             style={{
-              top: 'calc(max(12px, var(--stage-safe-top, 0px)) + 68px)',
+              top: isPc
+                ? 'calc(max(20px, var(--stage-safe-top, 0px)) + 92px)'
+                : 'calc(max(12px, var(--stage-safe-top, 0px)) + 68px)',
             }}
           >
             <div
-              className="rounded-[7px] px-3.5 py-1.5"
+              className={isPc ? 'rounded-[8px] px-6 py-2.5' : 'rounded-[7px] px-3.5 py-1.5'}
               style={{
                 backgroundColor: '#1E142D',
                 border: '2.5px solid #FFD147',
@@ -759,7 +771,7 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
               <span
                 className="block whitespace-nowrap font-cartoon font-extrabold italic uppercase tracking-wider text-[#FFD147]"
                 style={{
-                  fontSize: 'clamp(14px, 2.2vw, 20px)',
+                  fontSize: isPc ? 'clamp(26px, 2.2vw, 34px)' : 'clamp(14px, 2.2vw, 20px)',
                   WebkitTextStroke: '3px #0B0D18',
                   paintOrder: 'stroke fill',
                   textShadow: '0 2px 0 #0B0D18',
@@ -773,32 +785,46 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
 
         {/* Bottom-Left Status Effect Square Indicators */}
         <div
-          className="fixed z-30 flex flex-col items-start gap-1.5"
+          className="fixed z-30 flex flex-col items-start gap-2"
           style={{
-            left: 'max(12px, calc(var(--stage-safe-left, 0px) + 10px))',
-            bottom: 'max(14px, calc(var(--stage-safe-bottom, 0px) + 10px))',
+            left: isPc
+              ? 'max(24px, var(--stage-safe-left, 0px))'
+              : 'max(12px, calc(var(--stage-safe-left, 0px) + 10px))',
+            bottom: isPc
+              ? 'max(28px, calc(var(--stage-safe-bottom, 0px) + 22px))'
+              : 'max(14px, calc(var(--stage-safe-bottom, 0px) + 10px))',
           }}
         >
           {/* Tap / Hover Effect Description Card */}
           {inspectedEffect && (
             <div
-              className="animate-cartoon-pop-in pointer-events-none max-w-[210px] rounded-[6px] px-2.5 py-1.5"
+              className={`animate-cartoon-pop-in pointer-events-none rounded-[6px] ${
+                isPc ? 'max-w-[330px] px-4 py-2.5' : 'max-w-[210px] px-2.5 py-1.5'
+              }`}
               style={{
                 backgroundColor: '#16182F',
                 border: '2px solid #0B0D18',
                 boxShadow: '2px 2.5px 0 rgba(8, 10, 18, 0.92)',
               }}
             >
-              <div className="font-cartoon text-[10.5px] font-extrabold italic uppercase leading-tight text-white">
+              <div
+                className={`font-cartoon font-extrabold italic uppercase leading-tight text-white ${
+                  isPc ? 'text-[15.5px]' : 'text-[10.5px]'
+                }`}
+              >
                 {inspectedEffect.label}
               </div>
-              <div className="mt-0.5 font-cartoon text-[9.5px] font-semibold leading-snug text-[#D6DCFF]">
+              <div
+                className={`mt-0.5 font-cartoon font-semibold leading-snug text-[#D6DCFF] ${
+                  isPc ? 'text-[13.5px]' : 'text-[9.5px]'
+                }`}
+              >
                 {inspectedEffect.description}
               </div>
             </div>
           )}
 
-          <div className="flex items-center gap-1.5">
+          <div className={`flex items-center ${isPc ? 'gap-2.5' : 'gap-1.5'}`}>
             {STATUS_SLOTS.map((slot) => (
               <button
                 key={slot.id}
@@ -809,20 +835,21 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
                 aria-label={slot.defaultLabel}
                 onPointerDown={(e) => {
                   e.stopPropagation();
+                  if (isPc) e.currentTarget.blur();
                   handleInspect(slot.id);
                 }}
                 onMouseEnter={() => handleHoverStart(slot.id)}
                 onMouseLeave={() => handleHoverEnd(slot.id)}
                 style={{
                   display: 'none',
-                  width: '36px',
-                  height: '36px',
+                  width: isPc ? 'clamp(56px, 4.2vw, 66px)' : '36px',
+                  height: isPc ? 'clamp(56px, 4.2vw, 66px)' : '36px',
                   backgroundColor: slot.bg,
                   border: `2px solid ${slot.accent}`,
                   boxShadow: '1.5px 2px 0 #0B0D18',
                   touchAction: 'manipulation',
                 }}
-                className="pointer-events-auto relative items-center justify-center overflow-hidden rounded-[6px] focus:outline-none"
+                className="pointer-events-auto relative items-center justify-center overflow-hidden rounded-[6px] focus:outline-none cursor-pointer"
               >
                 {/* Remaining Time Sweep Veil (top-to-bottom elapsed darken) */}
                 <div
@@ -838,7 +865,10 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
                   }}
                 />
 
-                <div className="relative z-10 -mt-1.5 flex items-center justify-center">
+                <div
+                  className="relative z-10 -mt-1.5 flex items-center justify-center"
+                  style={{ transform: isPc ? 'scale(1.42)' : 'scale(1)' }}
+                >
                   <StatusEffectSvg id={slot.id} color={slot.accent} />
                 </div>
 
@@ -846,7 +876,9 @@ export const PlayerCombatHud = forwardRef<PlayerCombatHudHandle>(
                   ref={(el) => {
                     statusRefs.current[slot.id].timerText = el;
                   }}
-                  className="pointer-events-none absolute bottom-[1.5px] inset-x-0 z-10 text-center font-cartoon text-[8.5px] font-extrabold tabular-nums leading-none text-white"
+                  className={`pointer-events-none absolute bottom-[3px] inset-x-0 z-10 text-center font-cartoon font-extrabold tabular-nums leading-none text-white ${
+                    isPc ? 'text-[13px]' : 'text-[8.5px]'
+                  }`}
                   style={{
                     textShadow: '0 1px 0 #0B0D18',
                   }}

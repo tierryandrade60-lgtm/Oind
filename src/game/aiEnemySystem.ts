@@ -1617,6 +1617,7 @@ export class PlayableAiEnemySystem {
     astralBodyPos: THREE.Vector3 | null = null,
     onAstralBodyHit?: (damage: number, attackerId: string) => void,
     onRockImpact?: (pos: THREE.Vector3, force: number, colorHex?: string) => void,
+    maxReticleDist = 0.34,
   ): NpcHudSnapshot[] {
     const safeDt = Math.min(dt, 0.05);
     this.animTime += safeDt;
@@ -2511,7 +2512,7 @@ export class PlayableAiEnemySystem {
       this._proj.set(a.position.x, a.position.y + 1.15, a.position.z).project(camera);
       if (this._proj.z < -1 || this._proj.z > 1) continue;
       const reticleDist = Math.hypot(this._proj.x - reticleNdcX, this._proj.y - reticleNdcY);
-      if (reticleDist > 0.34) continue;
+      if (reticleDist > maxReticleDist) continue;
       const stickyBonus = a.id === this.selectedTargetId ? -0.045 : 0;
       const score = reticleDist + distToPlayer * 0.004 + stickyBonus;
       if (score < bestScore) {
